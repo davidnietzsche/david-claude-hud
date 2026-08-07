@@ -1,8 +1,12 @@
 # David Claude HUD
 
-A floating always-on-top panel for people running a lot of Claude Code sessions
-at once. It answers the question the notification sound can't: **which terminal
+A floating always-on-top panel for people running a lot of coding agents at
+once. It answers the question the notification sound can't: **which terminal
 just finished, and which one is waiting on me?**
+
+Works with **any agent CLI that runs in a terminal** — Claude Code, Codex,
+Gemini, Aider, opencode, Amp, Cursor, Crush, or something you add yourself in
+one line of JSON.
 
 Native macOS accessory app. No Electron, no npm, no external dependencies —
 just `clang`, the system `python3`, and Cocoa. The whole thing is four files.
@@ -30,14 +34,15 @@ Below them, your Claude **session** (5-hour) and **weekly** usage windows with
 time until reset — the same data `/usage` reports. Hover the weekly bar for the
 per-model scoped limit, which is often the one that actually bites first.
 
-**Sessions** — every live Claude Code process: name, state, how long it's been
+**Sessions** — every live agent process: name, state, how long it's been
 that way, CPU while busy, and the RAM of its **whole process tree** (the CLI
 plus its node/python/MCP children, which is where the memory actually goes).
 Click any row to bring that Terminal window to the front and select the right
 tab.
 
 A session that's blocked on you sorts to the top in amber and reads
-`needs you`.
+`needs you`. When more than one kind of agent is running, each row is tagged
+with which it is; with only one, the tags disappear.
 
 **Background** — launchd agents and crontab entries. Running jobs green, jobs
 that exited non-zero red with their exit code, scheduled jobs with time until
@@ -48,6 +53,41 @@ quietly failing for weeks.
   <img src="docs/demo-dark.png" width="46%" alt="Dark theme">
   <img src="docs/demo-min.png" width="46%" align="top" alt="Minimised">
 </p>
+
+## Providers
+
+The generic layer needs nothing from an agent: **any process that matches a
+known command and owns a terminal is a session.** From there it gets memory,
+instantaneous CPU, uptime, click-to-jump, and a name from its working
+directory. Busy/idle is inferred from real CPU usage — an agent parked at a
+prompt sits near zero, one streaming or running tools does not — with
+hysteresis so a pause between tool calls doesn't read as "finished".
+
+Providers that publish more get more. Claude Code publishes exact per-session
+state, so its rows use that instead of the heuristic, and it's the one that can
+show usage limits and a true "waiting for you" signal.
+
+| | state | limits | waiting-for-you |
+|---|---|---|---|
+| Claude Code | exact | ✅ | ✅ (`Notification` hook) |
+| everything else | inferred from CPU | — | — |
+
+Add your own in `~/.claude-hud/providers.json`:
+
+```json
+[
+  { "id": "mycli", "label": "MyCLI", "match": ["mycli"], "colour": "#ff8800" }
+]
+```
+
+- `match` — executable basenames (a login shell's leading `-` is handled).
+- `cmdline` — optional regex against the full command, for CLIs that run as
+  `node .../cli.js` and whose executable name is just `node`.
+- `logs` — optional glob of transcript files; a recent write also counts as
+  "working", which is more responsive than CPU alone.
+
+An entry reusing a built-in `id` overrides it, so you can retune a match rule
+or a colour without editing the source.
 
 ## Install
 
@@ -116,10 +156,14 @@ the app tried.
 
 State lives in `~/.claude-hud/`.
 
-**Session state is read straight from `~/.claude/sessions/<pid>.json`**, which
-Claude Code maintains itself — nothing to keep in sync. Files whose process has
-died, or whose PID got recycled into something that isn't Claude, are filtered
-out.
+**Session discovery** is one rule — an agent process that owns a tty — so a new
+agent needs no code, just a match rule. Claude Code additionally publishes exact
+per-pid state in `~/.claude/sessions/<pid>.json`, which is preferred over
+inference where available.
+
+**CPU is a real instantaneous figure**, from the delta in cumulative CPU time
+between ticks. `ps %cpu` is a decaying average, far too laggy to answer "is this
+working right now".
 
 **Usage limits** come from the same OAuth endpoint `/usage` uses. The token is
 re-read from your keychain on every refresh, so Claude Code's own token rotation
@@ -159,6 +203,9 @@ Things that cost real time to work out:
 - `NSLog` from an ad-hoc-signed accessory app doesn't reliably reach the unified
   log, and launchd only owns the wrapper so stderr goes nowhere. Hence the
   app's own log file.
+- BSD reports a login shell's `argv[0]` with a leading dash (`-zsh`), so any
+  process-name matching has to normalise that or it silently misses agents
+  started that way.
 
 ## Licence
 

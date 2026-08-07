@@ -29,6 +29,12 @@ STATE_F = os.path.join(HUD_DIR, "state.json")
 ATTN_DIR = os.path.join(HUD_DIR, "attention")
 USAGE_F = os.path.join(HUD_DIR, "usage.json")
 
+PROVIDERS_F = os.path.join(HUD_DIR, "providers.json")
+
+BUSY_CPU = 12.0     # instantaneous %CPU above which an agent counts as working
+BUSY_GRACE = 6      # keep calling it busy this long after the last hot sample
+MAX_CORES = os.cpu_count() or 8
+
 USAGE_TTL = 300     # usage moves slowly; polling harder just earns a 429
 USAGE_ERR_TTL = 600 # after an error (esp. rate limiting), back well off
 DONE_WINDOW = 600   # keep "just finished" highlighted for 10 min
@@ -102,21 +108,94 @@ def _clear_lock(what):
         pass
 
 
+# ---------------------------------------------------------------- providers
+
+# Any agent CLI that runs in a terminal can appear here. The generic layer below
+# (process discovery, tty mapping, memory, instantaneous CPU, busy inference)
+# needs nothing from a provider at all — an entry only has to say how to
+# recognise the process. Providers that expose more than that get more accuracy.
+#
+#   id       stable key
+#   label    shown in the UI
+#   match    executable basenames (lower case)
+#   cmdline  optional regex against the full command, for CLIs that run as
+#            `node .../cli.js` and whose executable name is just "node"
+#   logs     optional glob of transcript files; a recent mtime means "working"
+#   colour   dot colour in the UI
+BUILTIN_PROVIDERS = [
+    {"id": "claude", "label": "Claude", "match": ["claude"], "colour": "#c4795a"},
+    {"id": "codex", "label": "Codex", "match": ["codex"], "colour": "#10a37f",
+     "logs": "~/.codex/sessions/*/*/*/rollout-*.jsonl"},
+    {"id": "gemini", "label": "Gemini", "match": ["gemini"], "colour": "#4285f4"},
+    {"id": "aider", "label": "Aider", "match": ["aider"], "colour": "#8b5cf6"},
+    {"id": "opencode", "label": "opencode", "match": ["opencode"], "colour": "#0ea5e9"},
+    {"id": "amp", "label": "Amp", "match": ["amp"], "colour": "#e11d48"},
+    {"id": "cursor", "label": "Cursor", "match": ["cursor-agent"], "colour": "#64748b"},
+    {"id": "crush", "label": "Crush", "match": ["crush"], "colour": "#a855f7"},
+]
+
+
+def load_providers():
+    """Built-ins, plus anything in ~/.claude-hud/providers.json. A user entry
+    with an existing id overrides the built-in, so a match rule or colour can be
+    retuned — and a brand new agent added — without touching this file."""
+    provs = {p["id"]: dict(p) for p in BUILTIN_PROVIDERS}
+    extra = _read_json(PROVIDERS_F)
+    if isinstance(extra, list):
+        for p in extra:
+            if isinstance(p, dict) and p.get("id"):
+                provs.setdefault(p["id"], {}).update(p)
+    for p in provs.values():
+        p["match"] = [m.lower() for m in (p.get("match") or [p["id"]])]
+    return list(provs.values())
+
+
+def provider_for(proc, provs, cmdlines):
+    """Which agent, if any, this process is. Matches the executable basename
+    first, then an optional cmdline regex for CLIs that hide behind `node`."""
+    # BSD reports a login shell's argv[0] with a leading dash ("-zsh"), and an
+    # agent started that way would otherwise never match.
+    base = os.path.basename(proc["comm"]).lower().lstrip("-")
+    for p in provs:
+        if base in p["match"]:
+            return p
+    for p in provs:
+        rx = p.get("cmdline")
+        if rx and re.search(rx, cmdlines.get(proc["pid"], "")):
+            return p
+    return None
+
+
 # ---------------------------------------------------------------- sessions
 
+def _cpu_seconds(text):
+    """ps TIME field -> seconds. Formats: MM:SS.ss or HH:MM:SS.ss."""
+    try:
+        bits = text.split(":")
+        secs = float(bits[-1])
+        if len(bits) > 1:
+            secs += int(bits[-2]) * 60
+        if len(bits) > 2:
+            secs += int(bits[-3]) * 3600
+        return secs
+    except (ValueError, IndexError):
+        return 0.0
+
+
 def ps_snapshot():
-    """pid -> {ppid, tty, cpu, rss, etime, comm} for every process,
-    plus a ppid -> [pid] child index."""
-    out = _run(["ps", "-Ao", "pid=,ppid=,tty=,%cpu=,rss=,etime=,comm="])
+    """pid -> {ppid, tty, cpu, cpusec, rss, etime, comm}, plus a ppid -> [pid]
+    child index. comm is last because it can contain spaces."""
+    out = _run(["ps", "-Ao", "pid=,ppid=,tty=,%cpu=,time=,rss=,etime=,comm="])
     snap, kids = {}, {}
     for line in out.splitlines():
-        parts = line.split(None, 6)
-        if len(parts) < 7:
+        parts = line.split(None, 7)
+        if len(parts) < 8:
             continue
-        pid, ppid, tty, cpu, rss, etime, comm = parts
+        pid, ppid, tty, cpu, cputime, rss, etime, comm = parts
         try:
             pid, ppid = int(pid), int(ppid)
-            snap[pid] = {"ppid": ppid, "tty": tty, "cpu": float(cpu),
+            snap[pid] = {"pid": pid, "ppid": ppid, "tty": tty,
+                         "cpu": float(cpu), "cpusec": _cpu_seconds(cputime),
                          "rss": int(rss) * 1024, "etime": etime, "comm": comm}
         except ValueError:
             continue
@@ -124,11 +203,28 @@ def ps_snapshot():
     return snap, kids
 
 
+def cmdline_map(pids):
+    """Full command lines, fetched only when some provider actually needs them."""
+    if not pids:
+        return {}
+    out = _run(["ps", "-o", "pid=,command=", "-p", ",".join(str(p) for p in pids)])
+    m = {}
+    for line in out.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            try:
+                m[int(parts[0])] = parts[1]
+            except ValueError:
+                pass
+    return m
+
+
 def tree_usage(root, snap, kids):
-    """Total RSS and CPU for a process and everything it spawned — a Claude
-    session is really the CLI plus its node/python/MCP children, and the
-    children are where most of the memory actually goes."""
-    rss = cpu = 0
+    """Total RSS and cumulative CPU seconds for a process and everything it
+    spawned — an agent session is really the CLI plus its node/python/MCP
+    children, and the children are where most of the memory goes."""
+    rss = 0.0
+    cpusec = 0.0
     stack, seen = [root], set()
     while stack:
         pid = stack.pop()
@@ -139,14 +235,42 @@ def tree_usage(root, snap, kids):
         if not p:
             continue
         rss += p["rss"]
-        cpu += p["cpu"]
+        cpusec += p["cpusec"]
         stack.extend(kids.get(pid, ()))
-    return rss, cpu
+    return rss, cpusec
+
+
+def working_dirs(pids):
+    """cwd per pid in one lsof call — the fallback session name for providers
+    that don't publish one."""
+    if not pids:
+        return {}
+    out = _run(["lsof", "-a", "-d", "cwd", "-Fn",
+                "-p", ",".join(str(p) for p in pids)], timeout=8)
+    dirs, cur = {}, None
+    for line in out.splitlines():
+        if line.startswith("p"):
+            try:
+                cur = int(line[1:])
+            except ValueError:
+                cur = None
+        elif line.startswith("n") and cur is not None:
+            dirs.setdefault(cur, line[1:])
+    return dirs
+
+
+def newest_log_mtime(pattern):
+    """Most recent write across a provider's transcript files."""
+    try:
+        files = glob.glob(os.path.expanduser(pattern))
+        return max((os.path.getmtime(f) for f in files), default=0)
+    except OSError:
+        return 0
 
 
 def read_attention():
-    """Sessions Claude Code has asked for a human about, dropped by the
-    Notification hook. Keyed by session id."""
+    """Sessions an agent has asked for a human about, dropped by its hook.
+    Keyed by session id."""
     out = {}
     try:
         names = os.listdir(ATTN_DIR)
@@ -161,66 +285,138 @@ def read_attention():
     return out
 
 
-def collect_sessions(now_ms):
-    snap, kids = ps_snapshot()
-    attn = read_attention()
-    live_sids = set()
-
-    prev = _read_json(STATE_F, {}) or {}
-    state = {}
-    sessions = []
-
+def claude_sessions():
+    """Claude Code publishes exact per-pid state, so prefer it over inference.
+    pid -> {sid, name, status, changed, cwd}."""
+    out = {}
     for path in glob.glob(os.path.join(SESS_DIR, "*.json")):
         d = _read_json(path)
-        if not d:
+        if not d or not d.get("pid"):
             continue
-        pid = d.get("pid")
-        proc = snap.get(pid)
-        # Drop stale files whose process is gone, or whose PID got recycled
-        # into something that isn't Claude.
-        if not proc or "claude" not in proc["comm"].lower():
-            continue
+        out[d["pid"]] = {
+            "sid": d.get("sessionId") or str(d["pid"]),
+            "name": d.get("name"),
+            "status": d.get("status") or "idle",
+            "changed": d.get("statusUpdatedAt") or d.get("updatedAt"),
+            "cwd": d.get("cwd") or "",
+        }
+    return out
 
-        sid = d.get("sessionId") or str(pid)
-        status = d.get("status") or "idle"
-        changed = d.get("statusUpdatedAt") or d.get("updatedAt") or now_ms
 
-        old = prev.get(sid, {})
+def collect_sessions(now_ms):
+    snap, kids = ps_snapshot()
+    provs = load_providers()
+    attn = read_attention()
+
+    # A session is an agent process that owns a terminal. That single rule is
+    # the whole provider-agnostic layer.
+    cands = [p for p in snap.values() if p["tty"] not in ("??", "-", "")]
+    needs_cmdline = any(p.get("cmdline") for p in provs)
+    cmdlines = cmdline_map([p["pid"] for p in cands]) if needs_cmdline else {}
+
+    found = []
+    for proc in cands:
+        prov = provider_for(proc, provs, cmdlines)
+        if prov:
+            found.append((proc, prov))
+
+    exact = claude_sessions()
+    log_mtimes = {p["id"]: newest_log_mtime(p["logs"])
+                  for p in provs if p.get("logs")}
+
+    prev = _read_json(STATE_F, {}) or {}
+    prev_at = prev.get("_at") or 0
+    wall = max(0.001, (now_ms - prev_at) / 1000.0) if prev_at else 0
+    state = {"_at": now_ms}
+
+    unnamed = [proc["pid"] for proc, prov in found
+               if prov["id"] != "claude" or proc["pid"] not in exact]
+    dirs = working_dirs(unnamed)
+
+    sessions = []
+    live_sids = set()
+
+    for proc, prov in found:
+        pid = proc["pid"]
+        ex = exact.get(pid) if prov["id"] == "claude" else None
+        sid = ex["sid"] if ex else f"{prov['id']}:{pid}"
+        old = prev.get(sid) or {}
+
+        rss, cpusec = tree_usage(pid, snap, kids)
+
+        # Instantaneous CPU from the delta in cumulative CPU time. ps %cpu is a
+        # decaying average, far too laggy to infer "is it working right now".
+        prev_sec = old.get("cpusec")
+        if prev_sec is not None and wall > 0 and cpusec >= prev_sec:
+            cpu_now = min(100.0 * (cpusec - prev_sec) / wall, 100.0 * MAX_CORES)
+        else:
+            cpu_now = proc["cpu"]          # first tick: fall back to the average
+
+        if ex:
+            # Exact state beats any heuristic.
+            busy = ex["status"] == "busy"
+            changed = ex["changed"] or now_ms
+        else:
+            # Generic inference, good for any agent: a CLI waiting at a prompt
+            # sits near zero CPU; one streaming or running tools does not.
+            hot = cpu_now >= BUSY_CPU
+            lm = log_mtimes.get(prov["id"], 0)
+            if lm and (time.time() - lm) < 3:
+                hot = True
+            last_busy = old.get("lastBusyAt") or 0
+            if hot:
+                last_busy = now_ms
+            # Hysteresis: a brief dip between tool calls must not read as
+            # "finished", or the banner would fire every few seconds.
+            busy = (now_ms - last_busy) < BUSY_GRACE * 1000 if last_busy else False
+            state.setdefault(sid, {})["lastBusyAt"] = last_busy or None
+            changed = old.get("changed") or now_ms
+            if busy != bool(old.get("busy")):
+                changed = now_ms
+
         finished_at = old.get("finishedAt")
-        # busy -> idle is the moment David actually cares about.
-        if old.get("status") == "busy" and status != "busy":
-            finished_at = now_ms
-        elif status == "busy":
+        if old.get("busy") and not busy:
+            finished_at = now_ms            # the moment you actually care about
+        elif busy:
             finished_at = None
 
-        state[sid] = {"status": status, "finishedAt": finished_at}
+        st = state.setdefault(sid, {})
+        st.update({"busy": busy, "finishedAt": finished_at,
+                   "cpusec": cpusec, "changed": changed})
 
         wait = attn.get(sid)
         if wait:
             bucket = "waiting"
-        elif status == "busy":
+        elif busy:
             bucket = "busy"
         elif finished_at and (now_ms - finished_at) < DONE_WINDOW * 1000:
             bucket = "done"
         else:
             bucket = "idle"
 
-        tty_short = proc["tty"] if proc["tty"] != "??" else ""
-        rss, cpu = tree_usage(pid, snap, kids)
+        cwd = (ex or {}).get("cwd") or dirs.get(pid, "")
+        name = (ex or {}).get("name") or (os.path.basename(cwd.rstrip("/"))
+                                          if cwd else "") or f"pid {pid}"
+
+        tty_short = proc["tty"]
         live_sids.add(sid)
         sessions.append({
+            "provider": prov["id"],
+            "providerLabel": prov["label"],
+            "colour": prov.get("colour") or "#888888",
+            "exact": bool(ex),
             "waitingAt": wait.get("at") if wait else None,
             "waitMsg": (wait.get("message") or "") if wait else "",
             "mem": rss,
-            "treeCpu": round(cpu, 1),
+            "treeCpu": round(cpu_now, 1),
             "pid": pid,
             "sid": sid,
-            "name": d.get("name") or f"pid {pid}",
-            "cwd": d.get("cwd") or "",
+            "name": name,
+            "cwd": cwd,
             "status": bucket,
-            "raw_status": status,
+            "raw_status": "busy" if busy else "idle",
             "tty": tty_short,
-            "devtty": "/dev/" + tty_short if tty_short else "",
+            "devtty": "/dev/" + tty_short,
             "cpu": proc["cpu"],
             "uptime": proc["etime"],
             "idleFor": max(0, (now_ms - changed) // 1000),

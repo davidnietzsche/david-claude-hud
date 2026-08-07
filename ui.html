@@ -221,6 +221,10 @@
   .row.unread .new{display:inline-block}
   .row .tty{flex:none;font-size:9.5px;color:var(--fg3);opacity:.8;min-width:34px;
             text-align:right}
+  /* which agent this is — only worth the space when more than one is running */
+  .row .prov{flex:none;font-size:8.5px;font-weight:800;letter-spacing:.05em;
+             text-transform:uppercase;opacity:.9}
+  body.single-provider .row .prov{display:none}
   .row .mem{flex:none;font-size:10px;color:var(--fg2);min-width:40px;
             text-align:right;font-weight:600}
   .row.heavy .mem{color:var(--fail)}
@@ -528,8 +532,14 @@ window.render = d => {
     $('v-wk').title = `${u.scoped.label} weekly: ${u.scoped.pct}%`;
 
   /* sessions */
-  $('sub-s').textContent = c.total
-    ? `${c.total} · ${bytes(c.mem)}` : '';
+  // Hide the provider chips entirely when everything is the same agent.
+  const mix = {};
+  for (const s of sessions) mix[s.providerLabel] = (mix[s.providerLabel] || 0) + 1;
+  const kinds = Object.keys(mix);
+  body.classList.toggle('single-provider', kinds.length < 2);
+  $('sub-s').textContent = !c.total ? ''
+    : kinds.length < 2 ? `${c.total} · ${bytes(c.mem)}`
+    : kinds.map(k => `${mix[k]} ${k}`).join(' · ') + ` · ${bytes(c.mem)}`;
   sync($('list-s'), sessions, s => 's' + s.sid, (row, s) => {
     const un = isUnread(s);
     row.className = 'row click ' + s.status + (un ? ' unread' : '') +
@@ -544,10 +554,15 @@ window.render = d => {
         : dur(s.idleFor);
     row.innerHTML = `<span class="st"></span><span class="nm"></span>` +
       `<span class="new">NEW</span>` +
+      `<span class="prov"></span>` +
       `<span class="meta mono">${meta}</span>` +
       `<span class="mem mono">${bytes(s.mem)}</span>`;
     row.querySelector('.nm').textContent = s.name;
-    row.title = `${s.name}\npid ${s.pid} · ${s.devtty}\n` +
+    const pv = row.querySelector('.prov');
+    pv.textContent = s.providerLabel;
+    pv.style.color = s.colour;
+    row.title = `${s.providerLabel}${s.exact ? '' : ' (state inferred from CPU)'}\n` +
+      `${s.name}\npid ${s.pid} · ${s.devtty}\n` +
       `RAM ${bytes(s.mem)} (process tree) · CPU ${s.treeCpu}%\n` +
       `up ${s.uptime}\n${s.cwd}`;
     row.onclick = () => {
