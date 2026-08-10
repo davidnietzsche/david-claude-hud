@@ -147,12 +147,24 @@
      Only ~6px stays on screen. That sliver is painted in the current state
      colour, so the edge of your screen still answers "does anything need me?"
      while the panel itself is out of the way. */
-  body.docked::before{
-    content:'';position:fixed;top:0;bottom:0;width:6px;z-index:9;
+  /* Parked: everything hides except the character, so you can still see
+     whether he's dancing, asleep, or waving without pulling the panel out.
+     A thin state-coloured line runs down the exposed edge. */
+  body.docked.parked #meters,
+  body.docked.parked .sec,
+  body.docked.parked #banner,
+  body.docked.parked #tally,
+  body.docked.parked #minstat,
+  body.docked.parked .btns{display:none !important}
+  body.docked.parked #bar{padding:8px 6px;justify-content:center;border-bottom:none}
+  body.docked.parked #badge{position:absolute;top:2px;right:3px;
+    padding:1px 4px;font-size:8px;border-radius:7px}
+  body.docked.parked .ch{width:26px !important}
+  body.docked.parked::before{
+    content:'';position:fixed;top:0;bottom:0;width:3px;z-index:9;
     background:var(--edge,var(--idle));transition:background .3s}
-  body.docked.dock-right::before{left:0}
-  body.docked.dock-left::before{right:0}
-  body.docked.peeking::before{opacity:.35}
+  body.docked.parked.dock-right::before{left:0}
+  body.docked.parked.dock-left::before{right:0}
 
   /* ---------- collapsed (minimised) ---------- */
   body.min .sec,body.min #banner{display:none !important}
@@ -200,6 +212,9 @@
   .m .val{font-size:10.5px;color:var(--fg2);text-align:right;white-space:nowrap}
   body.compact .m .val{font-size:9.5px}
   .m .val em{font-style:normal;color:var(--fg);font-weight:600}
+  /* serious/critical means macOS is actively throttling you */
+  .m.alarm .lbl{color:var(--fail);font-weight:700}
+  .m.alarm .val{color:var(--fail)}
 
   /* ---------- sections ---------- */
   .sec{border-bottom:1px solid var(--line)}
@@ -337,6 +352,9 @@
   <div class="m mach"><span class="lbl">RAM</span>
     <span class="bar"><span class="fill" id="f-mem"></span></span>
     <span class="val" id="v-mem">—</span></div>
+  <div class="m mach" id="m-temp"><span class="lbl">Temp</span>
+    <span class="bar"><span class="fill" id="f-temp"></span></span>
+    <span class="val" id="v-temp">—</span></div>
   <div class="m gap"><span class="lbl">Session</span>
     <span class="bar"><span class="fill" id="f-ses"></span></span>
     <span class="val" id="v-ses">—</span></div>
@@ -465,7 +483,9 @@ window.__dockedSide = side => {           // native confirms which edge it took
   body.classList.toggle('docked', !!side);
   body.classList.toggle('dock-right', side === 'right');
   body.classList.toggle('dock-left', side === 'left');
-  if (!side) { peeked = false; body.classList.remove('peeking'); }
+  body.classList.toggle('parked', !!side && !peeked);
+  if (!side) { peeked = false; body.classList.remove('peeking', 'parked'); }
+  layout();
 };
 
 // Work out the edge here rather than asking the native side and waiting to be
@@ -491,7 +511,13 @@ function peekOut(on){
   if (!dockSide || peeked === on) return;
   peeked = on;
   body.classList.toggle('peeking', on);
-  send({cmd:'dock', side:dockSide, out:on});
+  body.classList.toggle('parked', !on);   // parked = collapsed to the character
+  // Let the layout settle at its new width before the window moves, or the
+  // panel slides out still sized for the strip.
+  requestAnimationFrame(() => {
+    layout();
+    send({cmd:'dock', side:dockSide, out:on});
+  });
 }
 document.documentElement.addEventListener('mouseenter', () => {
   clearTimeout(peekTimer);
@@ -568,12 +594,34 @@ function meter(fillEl, valEl, pct, text, palette){
 
 /* ---------- machine meters (pushed from native, off the collector tick) ---- */
 let lastCPU = 0;
-window.setMachine = (cpu, mem) => {
+// Apple silicon won't give a die temperature without root, so the bar tracks
+// macOS's own thermal verdict — the thing that decides whether you get
+// throttled. The battery figure alongside is a real reading but lags by
+// minutes, so it's context rather than the signal.
+const THERM = [
+  {pct: 20, label: 'normal',   colour: () => pal().done},
+  {pct: 50, label: 'warm',     colour: () => pal().done},
+  {pct: 80, label: 'hot',      colour: () => pal().busy},
+  {pct:100, label: 'throttling', colour: () => pal().fail},
+];
+window.setMachine = (cpu, mem, therm, battC) => {
   lastCPU = cpu;
   meter($('f-cpu'), $('v-cpu'), cpu, `<em>${cpu.toFixed(0)}</em>%`, loadColor);
   meter($('f-mem'), $('v-mem'), mem, `<em>${mem.toFixed(0)}</em>%`, loadColor);
+
+  const t = THERM[Math.max(0, Math.min(3, therm | 0))];
+  const degrees = battC > 0 ? `${battC.toFixed(0)}°` : '';
+  meter($('f-temp'), $('v-temp'), t.pct,
+        `<em>${degrees}</em> ${t.label}`, () => t.colour());
+  $('v-temp').title = battC > 0
+    ? `macOS thermal state: ${t.label}\nBattery sensor: ${battC.toFixed(1)}°C `
+      + `(lags by minutes — no die temperature without root)`
+    : `macOS thermal state: ${t.label}`;
+  $('m-temp').classList.toggle('alarm', (therm | 0) >= 2);
+
   if (body.classList.contains('min'))
-    $('minstat').textContent = `CPU ${cpu.toFixed(0)}%`;
+    $('minstat').textContent = `CPU ${cpu.toFixed(0)}%` +
+      ((therm | 0) >= 2 ? ` · ${t.label}` : '');
 };
 
 /* ---------- keyed row reconciler: no flicker, keeps hover ---------- */
@@ -669,7 +717,8 @@ function drawJobPanel(j, row){
 /* ---------- geometry ---------- */
 let lastW = 0, lastH = 0;
 function layout(){
-  const w = body.classList.contains('compact') ? 284 : 360;
+  const w = body.classList.contains('parked') ? 46
+          : body.classList.contains('compact') ? 284 : 360;
   const h = Math.ceil(body.getBoundingClientRect().height) + 2;
   if (w !== lastW || Math.abs(h - lastH) > 1) {
     lastW = w; lastH = h;

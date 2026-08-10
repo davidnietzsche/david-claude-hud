@@ -10,7 +10,7 @@ RES="$APP/Contents/Resources"
 echo "→ compiling"
 mkdir -p "$APP/Contents/MacOS" "$RES"
 clang -fobjc-arc -O2 -Wall \
-      -framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications -framework QuartzCore \
+      -framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications -framework QuartzCore -framework IOKit \
       hud.m -o "$BIN"
 
 echo "→ bundling"

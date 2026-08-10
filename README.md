@@ -93,9 +93,16 @@ with time until each resets. Hover the weekly bar for the per-model scoped
 limit, usually the one that bites first. No more finding out you're out of
 runway halfway through something.
 
-**Machine load** — CPU and RAM, measured properly. (RAM uses Activity Monitor's
+**Machine load** — CPU, RAM and thermal state. RAM uses Activity Monitor's
 definition rather than counting the file cache, which would read ~99% forever
-and tell you nothing.)
+and tell you nothing.
+
+`TEMP` is macOS's own thermal verdict, not a die temperature — Apple silicon
+won't publish one without root, and the battery sensor that *is* readable lags
+so badly it doesn't move after 20 seconds of full load. What the bar tracks
+instead is whether the machine is about to throttle you, which is the part that
+actually matters; it turns red at `hot` and `throttling`. The battery figure
+rides alongside as context.
 
 **Background jobs** — every launchd agent and crontab entry: running ones green,
 failed ones red with their exit code, scheduled ones with time until next run.
@@ -195,11 +202,12 @@ python3 hooks/install-hooks.py --remove
 | `⌃⌥H` | show / hide from anywhere |
 
 **Park it out of the way** when you're presenting or need the screen: `⇥` slides
-the panel off the nearest edge, leaving a 6px sliver. That sliver is painted in
-the current state colour — red if something needs you — so the edge of your
-screen still answers the only question that matters while you're mid-demo. Hover
-it to slide back out; anything that needs you pulls it out by itself. Menu bar →
-Reset Position un-parks it if you ever lose it.
+the panel off the nearest edge, leaving just a narrow strip — **with the
+character still in it**, so you can see at a glance whether he's dancing, asleep
+or waving without pulling the panel back out. A state-coloured line runs down
+the exposed edge, and the unread count sits in the corner. Hover to slide out;
+anything that needs you pulls it out by itself. Menu bar → Reset Position
+un-parks it if you ever lose it.
 
 Drag from **anywhere** on the panel — it only starts moving once you've actually
 moved a few pixels, so clicks and double-clicks underneath still work. Position,

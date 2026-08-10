@@ -38,6 +38,7 @@ MAX_CORES = os.cpu_count() or 8
 USAGE_TTL = 300     # usage moves slowly; polling harder just earns a 429
 USAGE_ERR_TTL = 600 # after an error (esp. rate limiting), back well off
 DONE_WINDOW = 600   # keep "just finished" highlighted for 10 min
+ATTN_MAX_AGE = 3600 # a waiting prompt older than this is stale
 
 # Job labels we care about: anything that isn't vendor noise.
 LABEL_SKIP = ("com.apple.", "com.google.", "com.DigiDNA", "com.microsoft.",
@@ -392,6 +393,14 @@ def collect_sessions(now_ms):
                    "cpusec": cpusec, "changed": changed})
 
         wait = attn.get(sid)
+        # A prompt you never answered can outlive the thing that asked it: the
+        # clearing hooks miss permission approvals, and a session you dealt
+        # with hours ago in the terminal leaves the marker behind. Age it out
+        # so the list can't silently fill with alerts that no longer apply.
+        if wait and (now_ms - (wait.get("at") or 0)) > ATTN_MAX_AGE * 1000:
+            drop_attention(sid)
+            wait = None
+
         if wait and busy:
             # A session that is actively working cannot be blocked on a human.
             # The clearing hook doesn't fire when you answer a *permission*

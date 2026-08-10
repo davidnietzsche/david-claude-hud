@@ -12,6 +12,7 @@
 #import <Carbon/Carbon.h>
 #import <UserNotifications/UserNotifications.h>
 #import <mach/mach.h>
+#import <IOKit/IOKitLib.h>
 
 static NSString *const kFrameKey = @"hudFrame";
 
@@ -89,6 +90,37 @@ static void hlog(NSString *fmt, ...) {
     uint64_t total = du + ds + di + dn;
     if (total == 0) return -1;
     return (double)(du + ds + dn) * 100.0 / (double)total;
+}
+
+// macOS won't hand out a CPU die temperature without root on Apple silicon —
+// the IOKit sensor nodes exist but publish no value. What it will give, free
+// and in real time, is its own verdict: thermalState says whether the machine
+// is about to throttle, which is the thing you actually care about. The
+// battery reading is a real temperature but lags badly (unmoved by 20s of full
+// load), so it's shown as context, not as the signal.
+- (double)batteryTemp {
+    io_service_t svc = IOServiceGetMatchingService(
+        kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"));
+    if (!svc) return -1;
+    CFTypeRef v = IORegistryEntryCreateCFProperty(
+        svc, CFSTR("Temperature"), kCFAllocatorDefault, 0);
+    IOObjectRelease(svc);
+    if (!v) return -1;
+    int raw = 0;
+    if (CFGetTypeID(v) == CFNumberGetTypeID())
+        CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &raw);
+    CFRelease(v);
+    return raw > 0 ? raw / 100.0 : -1;   // centi-degrees C
+}
+
+- (int)thermalLevel {
+    switch ([NSProcessInfo processInfo].thermalState) {
+        case NSProcessInfoThermalStateNominal:  return 0;
+        case NSProcessInfoThermalStateFair:     return 1;
+        case NSProcessInfoThermalStateSerious:  return 2;
+        case NSProcessInfoThermalStateCritical: return 3;
+    }
+    return 0;
 }
 
 - (double)memPercent {
@@ -306,7 +338,7 @@ static void hlog(NSString *fmt, ...) {
 // Parked, only a few pixels stay on screen; the page paints that sliver in the
 // current state colour, so a glance at the screen edge still tells you whether
 // anything needs you — without the panel covering what you're presenting.
-static const CGFloat kPeek = 6.0;
+static const CGFloat kPeek = 46.0;   // leaves the character visible
 static const CGFloat kInset = 12.0;
 
 - (void)applyDock:(BOOL)animate {
@@ -517,7 +549,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
     double cpu = [self cpuPercent];
     double mem = [self memPercent];
     [self.web evaluateJavaScript:
-        [NSString stringWithFormat:@"window.setMachine(%.1f,%.1f)", cpu, mem]
+        [NSString stringWithFormat:@"window.setMachine(%.1f,%.1f,%d,%.1f)",
+            cpu, mem, [self thermalLevel], [self batteryTemp]]
               completionHandler:nil];
 
     if (self.collecting) return;   // don't stack collectors on a slow tick
