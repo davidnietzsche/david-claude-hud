@@ -47,7 +47,8 @@ and plays a sound. You can't scroll past it. Not actually urgent? Hover it and
 hit `↓` to push it back down — the character stops waving and the title bar
 stops shouting. If that session asks again later, it comes straight back up.
 
-The three states never share a colour, so the list reads at a glance:
+The three states never share a colour, so the list reads at a glance — carried
+by the status dot, the row tint and the text, with no extra chrome:
 
 | | | |
 |---|---|---|

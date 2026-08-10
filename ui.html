@@ -138,8 +138,7 @@
   .ch .eyes{transform-origin:5.5px 1.5px}
 
   /* a session blocked on you outranks everything else */
-  .row.waiting{background:var(--waitBg);
-               box-shadow:inset 2px 0 0 var(--wait)}
+  .row.waiting{background:var(--waitBg)}
   .row.waiting .st{background:var(--wait);animation:chBang .8s ease-in-out infinite}
   .row.waiting .nm{color:var(--fg);font-weight:700}
   .row.waiting .meta{color:var(--wait);font-weight:700}
@@ -220,7 +219,6 @@
   body.compact .row{padding:3px 5px;gap:6px}
   .row:hover{background:var(--hover)}
   .row .st{width:6px;height:6px;border-radius:50%;flex:none;background:var(--idle)}
-  .row.busy{box-shadow:inset 2px 0 0 var(--busy)}
   .row.busy .st{background:var(--busy);animation:breathe 1.5s ease-in-out infinite}
   .row.done .st{background:var(--done);box-shadow:0 0 6px var(--done)}
   .row.fail .st{background:var(--fail)}
