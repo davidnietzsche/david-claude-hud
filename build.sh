@@ -16,6 +16,8 @@ clang -fobjc-arc -O2 -Wall \
 echo "→ bundling"
 cp ui.html collect.py "$RES/"
 chmod +x "$RES/collect.py"
+mkdir -p "$RES/sounds"
+cp sounds/*.wav "$RES/sounds/"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

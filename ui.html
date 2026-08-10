@@ -97,11 +97,27 @@
   @keyframes chArmL{0%,100%{transform:rotate(0deg)}50%{transform:rotate(-30deg)}}
   @keyframes chArmR{0%,100%{transform:rotate(0deg)}50%{transform:rotate(30deg)}}
 
-  /* resting: slow breathing, occasional blink */
-  .ch.rest{animation:chBreathe 3.4s ease-in-out infinite}
-  .ch.rest .eyes{animation:chBlink 4.6s ease-in-out infinite}
-  @keyframes chBreathe{0%,100%{transform:scaleY(1)}50%{transform:scaleY(.94)}}
-  @keyframes chBlink{0%,92%,100%{transform:scaleY(1)}96%{transform:scaleY(.08)}}
+  /* asleep: eyes shut, slow deep breathing, a slight droop, drifting z's */
+  .ch .eyes-shut,.ch .zzz{display:none}
+  .ch.rest .eyes{display:none}
+  .ch.rest .eyes-shut{display:block}
+  .ch.rest .zzz{display:block}
+  .ch.rest{animation:chSleep 4.2s ease-in-out infinite}
+  @keyframes chSleep{
+    0%,100%{transform:translateY(0) scaleY(1) rotate(-3deg)}
+    50%    {transform:translateY(1px) scaleY(.92) rotate(-3deg)}
+  }
+  .ch .z{fill:none;stroke:#c4795a;stroke-width:.3;stroke-linecap:square;opacity:0}
+  body.dark .ch .z{stroke:#d98764}
+  .ch.rest .z1{animation:zFloat 3.6s ease-out infinite}
+  .ch.rest .z2{animation:zFloat 3.6s ease-out infinite 1.2s}
+  .ch.rest .z3{animation:zFloat 3.6s ease-out infinite 2.4s}
+  @keyframes zFloat{
+    0%  {opacity:0;   transform:translate(0,.6px) scale(.65)}
+    22% {opacity:.85}
+    70% {opacity:.5}
+    100%{opacity:0;   transform:translate(.5px,-1.8px) scale(1.1)}
+  }
 
   /* waiting on you: waves and hops, with a marker over its head */
   .ch.wait{animation:chHop .8s ease-in-out infinite}
@@ -250,7 +266,16 @@
     </g>
     <rect class="skin arm-l" x="0" y="2" width="2" height="2"/>
     <rect class="skin arm-r" x="9" y="2" width="2" height="2"/>
+      <g class="eyes-shut">
+        <rect class="eye" x="3" y="1.55" width="1" height="0.4"/>
+        <rect class="eye" x="7" y="1.55" width="1" height="0.4"/>
+      </g>
     <rect class="bang" x="5" y="-2.4" width="1" height="1.6"/>
+    <g class="zzz">
+      <g transform="translate(8.9,-0.4)"><path class="z z1" d="M0 0 h1 l-1 1 h1"/></g>
+      <g transform="translate(9.9,-1.5) scale(.8)"><path class="z z2" d="M0 0 h1 l-1 1 h1"/></g>
+      <g transform="translate(8.6,-2.4) scale(.62)"><path class="z z3" d="M0 0 h1 l-1 1 h1"/></g>
+    </g>
   </svg>
   <span id="tally">—</span>
   <span id="minstat"></span>
@@ -354,6 +379,7 @@ function maybeNotify(list){
           title: s.waitingAt ? 'Waiting for you' : 'Finished',
           body:  s.name + (s.waitMsg ? ' — ' + s.waitMsg : ''),
           tty:   s.devtty});
+    send({cmd:'sound', which: s.waitingAt ? 'needs-you' : 'done'});
     // Un-minimise and flash, so it lands even with notifications switched off.
     if (s.waitingAt) {
       if (body.classList.contains('min')) setMode('min', false);
@@ -361,7 +387,6 @@ function maybeNotify(list){
       void body.offsetWidth;              // restart the animation
       body.classList.add('alerting');
       setTimeout(() => body.classList.remove('alerting'), 4500);
-      send({cmd:'sound'});
     }
   }
   if (changed) localStorage.setItem('hudNotified', JSON.stringify(notified));

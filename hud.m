@@ -258,14 +258,29 @@ static void hlog(NSString *fmt, ...) {
 
 - (void)terminate { [NSApp terminate:nil]; }
 
-// Sound needs no authorisation, unlike a notification banner.
-- (void)playAlert {
-    static NSSound *snd = nil;
+// Sound needs no authorisation, unlike a notification banner — which is why
+// the two alerts are distinguishable by ear alone.
+//
+// Resolution order: your own override, then the pair shipped in the bundle,
+// then a stock system sound if someone stripped the resources out.
+- (void)playSound:(NSString *)which {
+    if (![which isEqualToString:@"done"]) which = @"needs-you";
+
+    static NSMutableDictionary<NSString *, NSSound *> *cache = nil;
+    if (!cache) cache = [NSMutableDictionary new];
+
+    NSSound *snd = cache[which];
     if (!snd) {
-        NSString *p = [NSHomeDirectory() stringByAppendingPathComponent:
-                       @".claude/sounds/notify.mp3"];
-        snd = [[NSSound alloc] initWithContentsOfFile:p byReference:YES];
-        if (!snd) snd = [NSSound soundNamed:@"Submarine"];
+        NSString *file = [NSString stringWithFormat:@"sounds/%@.wav", which];
+        for (NSString *p in @[[NSHomeDirectory() stringByAppendingPathComponent:
+                                 [@".claude-hud/" stringByAppendingString:file]],
+                              [self.root stringByAppendingPathComponent:file]]) {
+            snd = [[NSSound alloc] initWithContentsOfFile:p byReference:YES];
+            if (snd) break;
+        }
+        if (!snd) snd = [NSSound soundNamed:
+            [which isEqualToString:@"done"] ? @"Glass" : @"Submarine"];
+        if (snd) cache[which] = snd;
     }
     [snd stop];
     [snd play];
@@ -273,6 +288,7 @@ static void hlog(NSString *fmt, ...) {
 
 - (void)testNotify {
     [self notify:@"Claude HUD" body:@"Notifications are working." tty:nil];
+    [self playSound:@"needs-you"];
 }
 
 #pragma mark Notifications
@@ -471,7 +487,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
         [self applyTheme:[b[@"dark"] boolValue]];
 
     } else if ([cmd isEqualToString:@"sound"]) {
-        [self playAlert];
+        [self playSound:b[@"which"]];
 
     } else if ([cmd isEqualToString:@"notify"]) {
         [self notify:b[@"title"] body:b[@"body"] tty:b[@"tty"]];

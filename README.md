@@ -16,9 +16,11 @@ just `clang`, the system `python3`, and Cocoa. The whole thing is four files.
 ## What it shows
 
 **The character** — a pixel companion in the title bar. It dances while any
-session is working, rests when nothing is, and waves with a red `!` when
-something is blocked on you. The fastest way to read the machine without
-reading anything.
+session is working, **falls asleep** when nothing is — eyes shut, slow
+breathing, drifting `z`s — and waves with a red `!` when something is blocked
+on you. The fastest way to read the machine without reading anything.
+
+![Character states](docs/character-states.png)
 
 **Title bar** — running vs idle counts, plus a `N NEW` badge for sessions that
 finished and you haven't opened yet. The badge is mirrored on the menu-bar icon,
@@ -130,10 +132,22 @@ Notification, Reload and Quit.
 
 ## Alerts
 
-When a session starts waiting on you, the panel un-minimises itself, pulses a
-red border, plays a sound, and the character waves. **None of that needs a
-permission**, which matters — macOS notification authorisation is easy to end up
-denied without noticing.
+Two sounds, chosen so you can tell them apart without looking:
+
+| | | |
+|---|---|---|
+| `sounds/done.wav` | a soft rising two-note chime | something finished, no rush |
+| `sounds/needs-you.wav` | three insistent pulses on one pitch | you are the blocker |
+
+Both are generated, not sampled — `sounds/make-sounds.py` synthesises them with
+nothing but the Python standard library, so there is no audio to license and
+regenerating them with a different character is a one-liner. Drop your own
+`done.wav` / `needs-you.wav` into `~/.claude-hud/sounds/` to override.
+
+When a session starts waiting on you, the panel also un-minimises itself, pulses
+a red border, and the character waves. **None of that needs a permission**,
+which matters — macOS notification authorisation is easy to end up denied
+without noticing.
 
 A desktop notification naming the session is also attempted, and clicking the
 banner jumps to that terminal. If banners never appear, check
@@ -153,6 +167,7 @@ the app tried.
   disk and refreshed by a detached child under a lock, so the tick never blocks
   on the network and never stacks requests into a rate limit.
 - `hooks/attention.py` — marks a session as waiting for a human.
+- `sounds/` — the two alert sounds and the script that generates them.
 
 State lives in `~/.claude-hud/`.
 
