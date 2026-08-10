@@ -769,7 +769,10 @@ window.render = d => {
   const unread = sessions.filter(isUnread);
   $('badge').className = unread.length ? 'on' : '';
   $('badge').textContent = unread.length ? `${unread.length} NEW` : '';
-  send({cmd:'badge', n:unread.length});
+  // The menu bar mirrors the character, so it stays readable with the panel
+  // hidden entirely.
+  send({cmd:'badge', n:unread.length,
+        state: waitingNow ? 'wait' : c.busy ? 'work' : 'rest'});
 
   /* the thing you actually want to see: what just finished */
   const fresh = sessions

@@ -80,6 +80,11 @@ He ends up being the fastest status check in the whole thing. Most of the time
 you never open the panel — you just notice out of the corner of your eye that
 he's stopped dancing, or started waving.
 
+**He's also in the menu bar**, drawn and animated natively, so he's still there
+with the panel parked at an edge or hidden entirely (`⌃⌥H`). The unread count
+sits next to him. That's the point: there is nowhere you can put this thing
+where the state stops being visible.
+
 ## Everything else it shows
 
 ![The HUD](docs/demo-light.png)
@@ -301,6 +306,12 @@ Things that cost real time to work out:
 - `NSLog` from an ad-hoc-signed accessory app doesn't reliably reach the unified
   log, and launchd only owns the wrapper so stderr goes nowhere. Hence the app's
   own log file.
+- A non-activating panel spends the first click activating itself unless both
+  the panel *and* the hosted web view implement `acceptsFirstMouse:` — otherwise
+  every drag needs two clicks.
+- `ClaudeHUD --dump-frames <dir>` renders the menu-bar character through the
+  real drawing code, which is the only way to eyeball it without screen
+  recording permission.
 
 ## Licence
 

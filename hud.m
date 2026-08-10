@@ -76,6 +76,10 @@ static void hlog(NSString *fmt, ...) {
 // previous CPU tick counters, for an instantaneous (not since-boot) reading
 @property (assign) uint64_t pUser, pSys, pIdle, pNice;
 @property (assign) BOOL notifyAllowed;
+@property (copy)   NSString *charState;   // @"work", @"wait" or @"rest"
+@property (assign) NSInteger charFrame;
+@property (assign) NSInteger unread;
+@property (strong) NSTimer *charTimer;
 @property (strong) NSString *dockSide;   // @"", @"left" or @"right"
 @property (assign) BOOL dockedOut;       // slid out, vs peeking at the edge
 @end
@@ -247,8 +251,14 @@ static void hlog(NSString *fmt, ...) {
 - (void)buildStatusItem {
     self.statusItem = [[NSStatusBar systemStatusBar]
                        statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.button.title = @"◧";
     self.statusItem.button.toolTip = @"Claude HUD";
+    self.statusItem.button.imagePosition = NSImageLeft;
+    self.charState = @"rest";
+    self.statusItem.button.image = [self characterImage];
+    // Its own timer: the 1.5s data tick is far too slow to read as motion.
+    self.charTimer = [NSTimer scheduledTimerWithTimeInterval:0.13 target:self
+                       selector:@selector(animateCharacter) userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.charTimer forMode:NSRunLoopCommonModes];
 
     NSMenu *m = [NSMenu new];
     [m addItemWithTitle:@"Show / Hide  (⌃⌥H)"
@@ -281,8 +291,9 @@ static void hlog(NSString *fmt, ...) {
 // Surface unacknowledged "finished" sessions on the menu-bar icon, so the count
 // is visible even when the panel is hidden or minimised.
 - (void)setBadge:(NSInteger)n {
+    self.unread = n;
     self.statusItem.button.title = n > 0
-        ? [NSString stringWithFormat:@"◧%ld", (long)n] : @"◧";
+        ? [NSString stringWithFormat:@" %ld", (long)n] : @"";
 }
 
 - (void)toggle {
@@ -308,6 +319,86 @@ static void hlog(NSString *fmt, ...) {
 }
 
 - (void)terminate { [NSApp terminate:nil]; }
+
+#pragma mark Menu-bar character
+
+// The panel can be hidden or parked; the menu bar never is. Drawing the same
+// creature up there means the状态 is readable with every window closed.
+//
+// Same 11x7 grid as the SVG in ui.html, re-drawn natively so it can animate
+// without a web view. Cocoa's origin is bottom-left, so y is flipped.
+static void fillCell(CGFloat x, CGFloat y, CGFloat w, CGFloat h,
+                     CGFloat u, CGFloat oy, CGFloat rows) {
+    NSRectFill(NSMakeRect(x * u, (rows - y - h) * u + oy, w * u, h * u));
+}
+
+- (NSImage *)characterImage {
+    const CGFloat H = 18.0;                  // menu-bar height budget
+    const CGFloat rows = 9.4;                // 7 body + headroom for the "!"
+    const CGFloat u = H / rows;              // one grid cell in points
+    const CGFloat W = 11 * u + 2;
+
+    NSString *st = self.charState ?: @"rest";
+    BOOL work = [st isEqualToString:@"work"];
+    BOOL wait = [st isEqualToString:@"wait"];
+    NSInteger f = self.charFrame;
+
+    // Per-state motion, kept to whole-ish pixels so it stays crisp.
+    CGFloat bob = 0, armL = 0, armR = 0, squash = 0;
+    if (work) {
+        CGFloat cycle[4] = {0, 1, 0, 1};
+        bob = cycle[f % 4] * u * 0.5;
+        armL = (f % 2) ? -u * 0.5 : u * 0.5;
+        armR = -armL;
+    } else if (wait) {
+        bob = (f % 2) ? u * 0.6 : 0;         // hopping
+        armR = (f % 2) ? u * 1.1 : u * 0.6;  // waving
+    } else {
+        squash = (f / 4) % 2 ? u * 0.18 : 0; // slow breathing
+    }
+
+    NSImage *img = [[NSImage alloc] initWithSize:NSMakeSize(W, H)];
+    [img lockFocus];
+
+    NSColor *skin = [NSColor colorWithSRGBRed:0.77 green:0.47 blue:0.35 alpha:1];
+    NSColor *dark = [NSColor colorWithWhite:0.10 alpha:1];
+    CGFloat oy = bob + 1;
+    CGFloat top = 3.0 + squash / u;          // headroom above the body
+
+    [skin set];
+    fillCell(2, top, 7, 5 - squash / u, u, oy, rows);        // torso
+    for (int i = 0; i < 4; i++)
+        fillCell(2 + i * 2, top + 5 - squash / u, 1, 2, u, oy, rows);   // legs
+    fillCell(0, top + 2, 2, 2, u, oy + armL, rows);          // left arm
+    fillCell(9, top + 2, 2, 2, u, oy + armR, rows);          // right arm
+
+    [dark set];
+    if (work || wait) {                                       // open eyes
+        fillCell(3, top + 1, 1, 1, u, oy, rows);
+        fillCell(7, top + 1, 1, 1, u, oy, rows);
+    } else {                                                  // shut eyes
+        fillCell(3, top + 1.55, 1, 0.4, u, oy, rows);
+        fillCell(7, top + 1.55, 1, 0.4, u, oy, rows);
+    }
+
+    if (wait && (f % 2) == 0) {                               // blinking "!"
+        [[NSColor colorWithSRGBRed:0.83 green:0.18 blue:0.18 alpha:1] set];
+        fillCell(5, top - 2.4, 1, 1.6, u, oy, rows);
+    }
+
+    [img unlockFocus];
+    img.template = NO;                        // keep the character's colour
+    return img;
+}
+
+- (void)animateCharacter {
+    // Idle needs almost no motion, so it costs almost nothing to draw.
+    BOOL lively = [self.charState isEqualToString:@"work"] ||
+                  [self.charState isEqualToString:@"wait"];
+    self.charFrame++;
+    if (!lively && (self.charFrame % 6)) return;
+    self.statusItem.button.image = [self characterImage];
+}
 
 #pragma mark Background job actions
 
@@ -649,12 +740,21 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
 
     } else if ([cmd isEqualToString:@"badge"]) {
         [self setBadge:[b[@"n"] integerValue]];
+        NSString *st = b[@"state"];
+        if (st.length && ![st isEqualToString:self.charState]) {
+            self.charState = st;
+            self.charFrame = 0;
+            self.statusItem.button.image = [self characterImage];
+        }
 
     } else if ([cmd isEqualToString:@"geometry"]) {
         CGFloat h = [b[@"h"] doubleValue];
         CGFloat w = [b[@"w"] doubleValue];
         h = MAX(34, MIN(h, [NSScreen mainScreen].visibleFrame.size.height - 40));
-        w = MAX(200, MIN(w, 600));
+        // Floor of 40, not 200: the parked strip is deliberately narrow, and a
+        // 200pt floor left the character centred in a window whose visible
+        // sliver was only 46pt wide — i.e. drawn entirely off screen.
+        w = MAX(40, MIN(w, 600));
         NSRect f = self.panel.frame;
         if (fabs(f.size.height - h) < 1.5 && fabs(f.size.width - w) < 1.5) return;
         f.origin.y += f.size.height - h;   // keep the top-left corner pinned
@@ -699,6 +799,26 @@ static OSStatus HotkeyHandler(EventHandlerCallRef ref, EventRef ev, void *ud) {
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
+        // --dump-frames <dir>: render the menu-bar character through the real
+        // drawing code so it can be eyeballed without a screen recording.
+        if (argc > 2 && strcmp(argv[1], "--dump-frames") == 0) {
+            HUD *h = [HUD new];
+            for (NSString *st in @[@"rest", @"work", @"wait"]) {
+                h.charState = st;
+                for (int f = 0; f < 4; f++) {
+                    h.charFrame = f;
+                    NSImage *im = [h characterImage];
+                    NSBitmapImageRep *rep = [NSBitmapImageRep
+                        imageRepWithData:[im TIFFRepresentation]];
+                    NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG
+                                                    properties:@{}];
+                    [png writeToFile:[NSString stringWithFormat:@"%s/%@-%d.png",
+                                      argv[2], st, f] atomically:YES];
+                }
+            }
+            printf("dumped\n");
+            return 0;
+        }
         HUD *hud = [HUD new];
         app.delegate = hud;
         [app run];
