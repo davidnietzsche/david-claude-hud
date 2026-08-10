@@ -12,6 +12,8 @@
 #import <Carbon/Carbon.h>
 #import <UserNotifications/UserNotifications.h>
 #import <mach/mach.h>
+#import <sys/sysctl.h>
+#import <signal.h>
 #import <IOKit/IOKitLib.h>
 
 static NSString *const kFrameKey = @"hudFrame";
@@ -175,6 +177,7 @@ static void hlog(NSString *fmt, ...) {
     [self buildStatusItem];
     [self registerHotkey];
     [self setupNotifications];
+    [self restorePinnedIfNewBoot];
 
     [self cpuPercent];  // prime the tick counters
     self.timer = [NSTimer scheduledTimerWithTimeInterval:1.5 target:self
@@ -285,6 +288,8 @@ static void hlog(NSString *fmt, ...) {
     [m addItem:vol];
     [m addItem:[NSMenuItem separatorItem]];
 
+    [m addItemWithTitle:@"Reopen pinned sessions"
+                 action:@selector(restorePinned) keyEquivalent:@""].target = self;
     [m addItemWithTitle:@"Test Notification"
                  action:@selector(testNotify) keyEquivalent:@""].target = self;
     [m addItemWithTitle:@"Reload"
@@ -453,6 +458,101 @@ static void fillCell(CGFloat x, CGFloat y, CGFloat w, CGFloat h,
         t.standardError = [NSFileHandle fileHandleWithNullDevice];
         @try { [t launch]; [t waitUntilExit]; } @catch (NSException *e) {}
     });
+}
+
+#pragma mark Pinned sessions
+
+// Sessions you've pinned are reopened after a reboot: a terminal per session,
+// each resuming its own conversation by id. Transcripts live in
+// ~/.claude/projects and survive a restart, so the conversation comes back with
+// its history, not as a fresh session in the right folder.
+- (NSString *)pinnedPath {
+    return [NSHomeDirectory() stringByAppendingPathComponent:
+            @".claude-hud/pinned.json"];
+}
+
+- (NSMutableArray *)pinnedList {
+    NSData *d = [NSData dataWithContentsOfFile:[self pinnedPath]];
+    id j = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+    return [j isKindOfClass:NSArray.class] ? [j mutableCopy] : [NSMutableArray new];
+}
+
+- (void)setPinned:(NSString *)sid on:(BOOL)on
+             name:(NSString *)name cwd:(NSString *)cwd {
+    if (!sid.length) return;
+    NSMutableArray *list = [self pinnedList];
+    [list filterUsingPredicate:
+        [NSPredicate predicateWithFormat:@"SELF.sid != %@", sid]];
+    if (on) [list addObject:@{@"sid": sid, @"name": name ?: sid,
+                              @"cwd": cwd ?: NSHomeDirectory()}];
+    NSData *out = [NSJSONSerialization dataWithJSONObject:list options:0 error:nil];
+    [out writeToFile:[self pinnedPath] atomically:YES];
+    hlog(@"pin %@ %@ (%lu pinned)", on ? @"+" : @"-", name, (unsigned long)list.count);
+}
+
+// Session ids that already have a live process, so a restore never opens a
+// second terminal for something that's already there.
+- (NSSet *)liveSessionIds {
+    NSMutableSet *live = [NSMutableSet new];
+    NSString *dir = [NSHomeDirectory() stringByAppendingPathComponent:
+                     @".claude/sessions"];
+    for (NSString *f in [[NSFileManager defaultManager]
+                         contentsOfDirectoryAtPath:dir error:nil]) {
+        if (![f hasSuffix:@".json"]) continue;
+        NSData *d = [NSData dataWithContentsOfFile:
+                     [dir stringByAppendingPathComponent:f]];
+        NSDictionary *j = d ? [NSJSONSerialization JSONObjectWithData:d
+                                                             options:0 error:nil] : nil;
+        NSNumber *pid = j[@"pid"];
+        // A session file outlives its process, so check the process is real.
+        if (j[@"sessionId"] && pid && kill(pid.intValue, 0) == 0)
+            [live addObject:j[@"sessionId"]];
+    }
+    return live;
+}
+
+- (void)restorePinned {
+    NSArray *list = [self pinnedList];
+    NSSet *live = [self liveSessionIds];
+    NSMutableArray *todo = [NSMutableArray new];
+    for (NSDictionary *p in list)
+        if (![live containsObject:p[@"sid"]]) [todo addObject:p];
+
+    if (!todo.count) { hlog(@"restore: nothing to do"); return; }
+    // A guard against a runaway list opening dozens of windows at login.
+    NSUInteger n = MIN(todo.count, 12u);
+    hlog(@"restore: opening %lu terminal(s)", (unsigned long)n);
+
+    NSMutableString *src = [NSMutableString stringWithString:
+        @"tell application \"Terminal\"\n activate\n"];
+    for (NSUInteger i = 0; i < n; i++) {
+        NSDictionary *p = todo[i];
+        NSString *cwd = [p[@"cwd"] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
+        NSString *sid = p[@"sid"];
+        if (![sid isKindOfClass:NSString.class]) continue;
+        [src appendFormat:@" do script \"cd '%@' && claude --resume %@\"\n", cwd, sid];
+    }
+    [src appendString:@"end tell"];
+    [self runTool:@"/usr/bin/osascript" args:@[@"-e", src]];
+}
+
+// Only after an actual reboot — not every time the app relaunches, which it
+// does on every rebuild.
+- (long)bootTime {
+    struct timeval bt; size_t len = sizeof(bt);
+    if (sysctlbyname("kern.boottime", &bt, &len, NULL, 0) != 0) return 0;
+    return bt.tv_sec;
+}
+
+- (void)restorePinnedIfNewBoot {
+    long boot = [self bootTime];
+    if (!boot) return;
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if ([ud integerForKey:@"lastRestoreBoot"] == boot) return;
+    [ud setInteger:boot forKey:@"lastRestoreBoot"];
+    // Give the desktop a moment to settle before throwing windows at it.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC),
+                   dispatch_get_main_queue(), ^{ [self restorePinned]; });
 }
 
 #pragma mark Edge docking
@@ -770,6 +870,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
     } else if ([cmd isEqualToString:@"focus"]) {
         [self focusTTY:b[@"tty"] winId:b[@"winId"]];
 
+    } else if ([cmd isEqualToString:@"pin"]) {
+        [self setPinned:b[@"sid"] on:[b[@"on"] boolValue]
+                   name:b[@"name"] cwd:b[@"cwd"]];
+
     } else if ([cmd isEqualToString:@"quitApp"]) {
         // Ask the app to quit rather than killing it, so it can prompt about
         // unsaved work. The UI has already confirmed twice by this point.
@@ -866,6 +970,14 @@ int main(int argc, const char *argv[]) {
         NSApplication *app = [NSApplication sharedApplication];
         // --dump-frames <dir>: render the menu-bar character through the real
         // drawing code so it can be eyeballed without a screen recording.
+        // --restore: run the pinned-session restore once and exit, so the
+        // behaviour can be exercised without clicking a menu.
+        if (argc > 1 && strcmp(argv[1], "--restore") == 0) {
+            HUD *h = [HUD new];
+            [h restorePinned];
+            [NSThread sleepForTimeInterval:2.0];
+            return 0;
+        }
         if (argc > 2 && strcmp(argv[1], "--dump-frames") == 0) {
             HUD *h = [HUD new];
             for (NSString *st in @[@"rest", @"work", @"wait"]) {

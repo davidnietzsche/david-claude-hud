@@ -292,6 +292,12 @@
              text-transform:uppercase;opacity:.9}
   body.single-provider .row .prov{display:none}
   /* push a "needs you" down when it isn't actually urgent */
+  /* pin: reopen this session after a restart */
+  .row .pin{display:none;flex:none;font-size:10px;line-height:1;color:var(--fg3);
+            padding:2px 3px;border-radius:4px}
+  .row:hover .pin{display:inline-block}
+  .row.pinned .pin{display:inline-block;color:var(--busy)}
+  .row .pin:hover{color:var(--fg);background:var(--hover)}
   .row .push{display:none;flex:none;font-size:11px;line-height:1;color:var(--fg3);
              padding:2px 4px;border-radius:4px}
   .row.waiting:hover .push{display:inline-block}
@@ -473,6 +479,8 @@ function maybeNotify(list){
    Keyed by the waiting timestamp, so pushing one down is only for *this*
    interruption — if the same session asks again later it comes straight back
    to the top. */
+let pinned = {};
+try { pinned = JSON.parse(localStorage.getItem('hudPinned') || '{}'); } catch(e){}
 let pushed = {};
 try { pushed = JSON.parse(localStorage.getItem('hudPushed') || '{}'); } catch(e){}
 const isWaiting = s => s.status === 'waiting' && pushed[s.sid] !== s.waitingAt;
@@ -506,6 +514,7 @@ window.__dockedSide = side => {           // native confirms which edge it took
   body.classList.toggle('dock-left', side === 'left');
   body.classList.toggle('parked', !!side && !peeked);
   if (!side) { peeked = false; body.classList.remove('peeking', 'parked'); }
+  if (lastData) render(lastData);   // badge text must change with the width
   layout();
 };
 
@@ -850,9 +859,9 @@ window.render = d => {
   maybeNotify(sessions);
 
   const unread = sessions.filter(isUnread);
-  const parked = body.classList.contains('parked');
+  const narrow = body.classList.contains('docked');
   $('badge').className = unread.length ? 'on' : '';
-  $('badge').textContent = unread.length ? (parked ? `${unread.length}`
+  $('badge').textContent = unread.length ? (narrow ? `${unread.length}`
                                                    : `${unread.length} NEW`) : '';
   body.classList.toggle('has-badge', !!unread.length);
   // The menu bar mirrors the character, so it stays readable with the panel
@@ -926,6 +935,7 @@ window.render = d => {
         : dur(s.idleFor);
     row.innerHTML = `<span class="st"></span><span class="nm"></span>` +
       `<span class="new">NEW</span>` +
+      `<span class="pin" title="Reopen this session after a restart">⚑</span>` +
       `<span class="push" title="Not urgent — push this down">↓</span>` +
       `<span class="prov"></span>` +
       `<span class="meta mono">${meta}</span>` +
@@ -939,6 +949,15 @@ window.render = d => {
       `${s.name}\npid ${s.pid} · ${s.devtty}\n` +
       `RAM ${bytes(s.mem)} (process tree) · CPU ${s.treeCpu}%\n` +
       `up ${s.uptime}\n${s.cwd}`;
+    row.classList.toggle('pinned', !!pinned[s.sid]);
+    row.querySelector('.pin').onclick = e => {
+      e.stopPropagation();
+      const on = !pinned[s.sid];
+      if (on) pinned[s.sid] = true; else delete pinned[s.sid];
+      localStorage.setItem('hudPinned', JSON.stringify(pinned));
+      send({cmd:'pin', sid:s.sid, on, name:s.name, cwd:s.cwd});
+      render(d);
+    };
     row.querySelector('.push').onclick = e => {
       e.stopPropagation();
       pushDown(s);

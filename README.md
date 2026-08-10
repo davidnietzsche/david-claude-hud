@@ -41,6 +41,13 @@ actually going and looking. That's the entire point.
 **Double-click the row, land in the right terminal.** No hunting. The window
 comes forward with the correct tab already selected.
 
+**Pin the sessions you care about** with the `⚑` on a row, and they come back
+after a restart: one terminal each, `cd`'d to the right folder and resuming that
+exact conversation with its history — Claude Code appends to the same
+transcript, so the id stays valid however many times you reboot. It only fires
+after a real reboot, never when the app merely relaunches, and skips anything
+already running. Menu bar → Reopen pinned sessions does it on demand.
+
 **Anything blocked on you shouts.** A session waiting for permission jumps to
 the top in **red** reading `needs you`, the panel un-minimises itself, pulses,
 and plays a sound. You can't scroll past it. Not actually urgent? Hover it and
