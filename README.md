@@ -122,8 +122,9 @@ moved) and a log untouched for three weeks (it's dead, delete it). From there:
 it — and asks twice first.
 
 <p align="center">
-  <img src="docs/demo-dark.png" width="46%" alt="Dark theme">
-  <img src="docs/demo-min.png" width="46%" align="top" alt="Minimised">
+  <img src="docs/demo-dark.png" width="44%" alt="Dark theme">
+  <img src="docs/demo-min.png" width="44%" align="top" alt="Minimised">
+  <img src="docs/parked-tab.png" width="4%" align="top" alt="Parked at the edge">
 </p>
 
 Minimised it's one line — but it keeps the two limit bars, because those are the
