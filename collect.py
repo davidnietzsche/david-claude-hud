@@ -620,6 +620,36 @@ def _next_cron(mi, ho, dom, mon, dow, now):
     return None
 
 
+def tail_error(path, limit=400):
+    """The last meaningful line of a job's log. `exit 1` on its own says
+    nothing — "HTTP Error 404" and "handshake timed out" are different
+    problems with different fixes."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 4000))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        line = line.strip()
+        if line and not line.startswith(("File \"", "  ", "Traceback")):
+            return line[:limit]
+    return ""
+
+
+def plist_detail(plist):
+    """What the job actually runs, and where it logs."""
+    txt = _run(["plutil", "-convert", "json", "-o", "-", plist], timeout=5)
+    try:
+        p = json.loads(txt)
+    except Exception:
+        return {}, "", ""
+    args = p.get("ProgramArguments") or ([p["Program"]] if p.get("Program") else [])
+    log = p.get("StandardErrorPath") or p.get("StandardOutPath") or ""
+    return p, " ".join(args), log
+
+
 def collect_launchd(now):
     out = _run(["launchctl", "list"], timeout=8)
     jobs = []
@@ -641,13 +671,11 @@ def collect_launchd(now):
 
         plist = os.path.join(LA_DIR, label + ".plist")
         sched, nxt = "", None
+        cmd, log, last = "", "", ""
         if os.path.exists(plist):
-            txt = _run(["plutil", "-convert", "json", "-o", "-", plist], timeout=5)
-            p = None
-            try:
-                p = json.loads(txt)
-            except Exception:
-                p = None
+            p, cmd, log = plist_detail(plist)
+            if log and (last_ex := True):
+                last = tail_error(log) if last != 0 else ""
             if isinstance(p, dict):
                 if "StartInterval" in p:
                     iv = p["StartInterval"]
@@ -675,6 +703,10 @@ def collect_launchd(now):
             "failed": last != 0 and not running,
             "sched": sched,
             "nextTs": int(nxt.timestamp() * 1000) if nxt else None,
+            "cmd": cmd,
+            "logPath": log,
+            "lastLog": last,
+            "logAge": int(time.time() - os.path.getmtime(log)) if log and os.path.exists(log) else None,
         })
     return jobs
 
@@ -712,6 +744,11 @@ def collect_cron(now):
             "sched": f"{ho}:{mi.zfill(2)}" if mi.isdigit() and ho.isdigit()
                      else f"{mi} {ho} {dom} {mon} {dow}",
             "nextTs": int(nxt.timestamp() * 1000) if nxt else None,
+            "cmd": cmd,
+            "logPath": (re.search(r">>?\s*(\S+)", cmd) or [None, ""])[1]
+                       if ">" in cmd else "",
+            "lastLog": "",
+            "logAge": None,
         })
     return jobs
 

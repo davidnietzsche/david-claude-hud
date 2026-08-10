@@ -45,6 +45,7 @@ static void hlog(NSString *fmt, ...) {
 @end
 
 @implementation HUDPanel
+- (NSTimeInterval)animationResizeTime:(NSRect)r { return 0.13; }
 - (BOOL)canBecomeKeyWindow { return YES; }
 - (BOOL)canBecomeMainWindow { return NO; }
 @end
@@ -63,6 +64,8 @@ static void hlog(NSString *fmt, ...) {
 // previous CPU tick counters, for an instantaneous (not since-boot) reading
 @property (assign) uint64_t pUser, pSys, pIdle, pNice;
 @property (assign) BOOL notifyAllowed;
+@property (strong) NSString *dockSide;   // @"", @"left" or @"right"
+@property (assign) BOOL dockedOut;       // slid out, vs peeking at the edge
 @end
 
 @implementation HUD
@@ -207,7 +210,7 @@ static void hlog(NSString *fmt, ...) {
     NSMenu *m = [NSMenu new];
     [m addItemWithTitle:@"Show / Hide  (⌃⌥H)"
                  action:@selector(toggle) keyEquivalent:@""].target = self;
-    [m addItemWithTitle:@"Reset Position"
+    [m addItemWithTitle:@"Reset Position / Un-park"
                  action:@selector(resetPosition) keyEquivalent:@""].target = self;
     [m addItemWithTitle:@"Test Notification"
                  action:@selector(testNotify) keyEquivalent:@""].target = self;
@@ -247,6 +250,11 @@ static void hlog(NSString *fmt, ...) {
 - (void)reload { [self.web reload]; }
 
 - (void)resetPosition {
+    // Also un-parks it. Without this, a panel parked at an edge that somehow
+    // stops responding to hover would have no way back.
+    self.dockSide = @"";
+    [self.web evaluateJavaScript:@"window.__dockedSide && window.__dockedSide('')"
+               completionHandler:nil];
     NSRect vis = [NSScreen mainScreen].visibleFrame;
     NSRect f = self.panel.frame;
     f.origin.x = NSMaxX(vis) - f.size.width - 20;
@@ -257,6 +265,84 @@ static void hlog(NSString *fmt, ...) {
 }
 
 - (void)terminate { [NSApp terminate:nil]; }
+
+#pragma mark Background job actions
+
+// The three things you actually do with a failing job: read it, retry it, or
+// stop it. Disabling is confirmed twice in the UI before it reaches here.
+- (void)runJobAction:(NSString *)action label:(NSString *)label log:(NSString *)log {
+    if ([action isEqualToString:@"log"]) {
+        if (!log.length) return;
+        NSString *safe = [log stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
+        NSString *src = [NSString stringWithFormat:
+            @"tell application \"Terminal\"\n activate\n"
+             " do script \"tail -n 200 -f '%@'\"\nend tell", safe];
+        [self runTool:@"/usr/bin/osascript" args:@[@"-e", src]];
+        return;
+    }
+    if (!label.length) return;
+    NSString *target = [NSString stringWithFormat:@"gui/%d/%@", getuid(), label];
+    if ([action isEqualToString:@"run"]) {
+        [self runTool:@"/bin/launchctl" args:@[@"kickstart", @"-k", target]];
+    } else if ([action isEqualToString:@"stop"]) {
+        [self runTool:@"/bin/launchctl" args:@[@"bootout", target]];
+        hlog(@"disabled job %@", label);
+    }
+}
+
+- (void)runTool:(NSString *)path args:(NSArray<NSString *> *)args {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSTask *t = [NSTask new];
+        t.executableURL = [NSURL fileURLWithPath:path];
+        t.arguments = args;
+        t.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+        t.standardError = [NSFileHandle fileHandleWithNullDevice];
+        @try { [t launch]; [t waitUntilExit]; } @catch (NSException *e) {}
+    });
+}
+
+#pragma mark Edge docking
+
+// Parked, only a few pixels stay on screen; the page paints that sliver in the
+// current state colour, so a glance at the screen edge still tells you whether
+// anything needs you — without the panel covering what you're presenting.
+static const CGFloat kPeek = 6.0;
+static const CGFloat kInset = 12.0;
+
+- (void)applyDock:(BOOL)animate {
+    if (!self.dockSide.length) return;
+    NSRect vis = [NSScreen mainScreen].visibleFrame;
+    NSRect f = self.panel.frame;
+    BOOL right = [self.dockSide isEqualToString:@"right"];
+    f.origin.x = self.dockedOut
+        ? (right ? NSMaxX(vis) - f.size.width - kInset : NSMinX(vis) + kInset)
+        : (right ? NSMaxX(vis) - kPeek : NSMinX(vis) - f.size.width + kPeek);
+    [self.panel setFrame:f display:YES animate:animate];
+}
+
+- (void)setDock:(NSString *)side out:(BOOL)out {
+    if (side.length == 0) {
+        // Undocked: bring it fully back on screen where it can be dragged.
+        self.dockSide = @"";
+        NSRect vis = [NSScreen mainScreen].visibleFrame;
+        NSRect f = self.panel.frame;
+        f.origin.x = MIN(MAX(f.origin.x, NSMinX(vis) + kInset),
+                         NSMaxX(vis) - f.size.width - kInset);
+        [self.panel setFrame:f display:YES animate:YES];
+        [self saveFrame];
+        return;
+    }
+    self.dockSide = side;
+    self.dockedOut = out;
+    [self applyDock:YES];
+}
+
+// Which edge is it nearer to right now?
+- (NSString *)nearestEdge {
+    NSRect vis = [NSScreen mainScreen].visibleFrame;
+    NSRect f = self.panel.frame;
+    return (NSMidX(f) > NSMidX(vis)) ? @"right" : @"left";
+}
 
 // Sound needs no authorisation, unlike a notification banner — which is why
 // the two alerts are distinguishable by ear alone.
@@ -481,6 +567,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
         [self tick];
 
     } else if ([cmd isEqualToString:@"drag"]) {
+        // Dragging a parked panel takes it off its edge, which is what you
+        // expect when you grab and pull it.
+        if (self.dockSide.length) {
+            self.dockSide = @"";
+            [self.web evaluateJavaScript:@"window.__dockedSide('')"
+                       completionHandler:nil];
+        }
         NSEvent *e = NSApp.currentEvent;
         if (e) [self.panel performWindowDragWithEvent:e];
 
@@ -489,6 +582,17 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
 
     } else if ([cmd isEqualToString:@"focus"]) {
         [self focusTTY:b[@"tty"] winId:b[@"winId"]];
+
+    } else if ([cmd isEqualToString:@"job"]) {
+        [self runJobAction:b[@"action"] label:b[@"label"] log:b[@"log"]];
+
+    } else if ([cmd isEqualToString:@"dock"]) {
+        NSString *side = b[@"side"];
+        if ([side isEqualToString:@"auto"]) side = [self nearestEdge];
+        [self setDock:side out:[b[@"out"] boolValue]];
+        if (side.length) [self.web evaluateJavaScript:
+            [NSString stringWithFormat:@"window.__dockedSide('%@')", side]
+                                    completionHandler:nil];
 
     } else if ([cmd isEqualToString:@"theme"]) {
         [self applyTheme:[b[@"dark"] boolValue]];
@@ -515,7 +619,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
         [self.panel setFrame:f display:YES animate:NO];
         // Otherwise the drop shadow keeps the old, square-cornered outline.
         [self.panel invalidateShadow];
-        [self saveFrame];
+        if (self.dockSide.length) [self applyDock:NO];   // keep it on its edge
+        else [self saveFrame];
 
     } else if ([cmd isEqualToString:@"quit"]) {
         [NSApp terminate:nil];

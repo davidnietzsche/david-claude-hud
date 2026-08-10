@@ -102,6 +102,13 @@ failed ones red with their exit code, scheduled ones with time until next run.
 Switching this on for the first time usually turns up a couple of cron jobs that
 have been quietly failing for weeks.
 
+`exit 1` is not a diagnosis, so **click a job** to see what it actually runs,
+how long since its log was last written, and the last real line of that log —
+the difference between "handshake timed out" (retry), "HTTP 404" (the endpoint
+moved) and a log untouched for three weeks (it's dead, delete it). From there:
+**Open log** tails it in a terminal, **Run now** kicks it off, **Disable** stops
+it — and asks twice first.
+
 <p align="center">
   <img src="docs/demo-dark.png" width="46%" alt="Dark theme">
   <img src="docs/demo-min.png" width="46%" align="top" alt="Minimised">
@@ -182,11 +189,21 @@ python3 hooks/install-hooks.py --remove
 |---|---|
 | `◐` | light / dark theme |
 | `⤢` | compact size |
+| `⇥` | park at the nearest screen edge |
 | `−` | minimise (keeps the limit bars) |
 | `✕` | quit |
 | `⌃⌥H` | show / hide from anywhere |
 
-Drag by any empty area. Position, size, theme and collapsed sections persist.
+**Park it out of the way** when you're presenting or need the screen: `⇥` slides
+the panel off the nearest edge, leaving a 6px sliver. That sliver is painted in
+the current state colour — red if something needs you — so the edge of your
+screen still answers the only question that matters while you're mid-demo. Hover
+it to slide back out; anything that needs you pulls it out by itself. Menu bar →
+Reset Position un-parks it if you ever lose it.
+
+Drag from **anywhere** on the panel — it only starts moving once you've actually
+moved a few pixels, so clicks and double-clicks underneath still work. Position,
+size, theme and collapsed sections persist.
 There's a `◧` menu-bar item too: Show/Hide, Reset Position, Test Notification,
 Reload, Quit.
 

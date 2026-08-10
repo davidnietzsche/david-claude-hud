@@ -143,6 +143,17 @@
   .row.waiting .nm{color:var(--fg);font-weight:700}
   .row.waiting .meta{color:var(--wait);font-weight:700}
 
+  /* ---------- parked at a screen edge ----------
+     Only ~6px stays on screen. That sliver is painted in the current state
+     colour, so the edge of your screen still answers "does anything need me?"
+     while the panel itself is out of the way. */
+  body.docked::before{
+    content:'';position:fixed;top:0;bottom:0;width:6px;z-index:9;
+    background:var(--edge,var(--idle));transition:background .3s}
+  body.docked.dock-right::before{left:0}
+  body.docked.dock-left::before{right:0}
+  body.docked.peeking::before{opacity:.35}
+
   /* ---------- collapsed (minimised) ---------- */
   body.min .sec,body.min #banner{display:none !important}
   /* minimised still shows the limits — they're the reason to keep it on screen */
@@ -257,6 +268,19 @@
   .row.heavy .mem{color:var(--fail)}
   body.compact .row .tty{display:none}
   .row.click:active{background:var(--track)}
+  /* job detail: what it runs, why it failed, and what you can do about it */
+  .jd{margin:2px 6px 8px;padding:8px 10px;border-radius:7px;
+      background:var(--hover);font-size:10.5px;line-height:1.5}
+  .jd .k{color:var(--fg3);text-transform:uppercase;letter-spacing:.06em;
+         font-size:8.5px;font-weight:700}
+  .jd .v{color:var(--fg2);word-break:break-all;display:block;margin-bottom:5px}
+  .jd .err{color:var(--fail);font-weight:600}
+  .jd .acts{display:flex;gap:6px;margin-top:7px}
+  .jd .act{flex:none;padding:3px 9px;border-radius:5px;background:var(--track);
+           color:var(--fg2);font-size:10px;font-weight:600}
+  .jd .act:hover{background:var(--fg3);color:var(--panel)}
+  .jd .act.danger{color:var(--fail)}
+  .jd .act.arm{background:var(--fail);color:#fff}
   .empty{padding:8px 12px;font-size:10.5px;color:var(--fg3);font-style:italic}
 </style>
 </head>
@@ -294,6 +318,7 @@
   <span class="btns">
     <span class="xbtn" id="b-theme" title="Light / dark">◐</span>
     <span class="xbtn" id="b-size"  title="Compact size">⤢</span>
+    <span class="xbtn" id="b-dock"  title="Park at the screen edge">⇥</span>
     <span class="xbtn" id="b-min"   title="Minimise">–</span>
     <span class="xbtn" id="b-quit"  title="Quit">✕</span>
   </span>
@@ -364,6 +389,7 @@ let lastData = null, seen = {};
 try { seen = JSON.parse(localStorage.getItem('hudSeen') || '{}'); } catch(e){}
 const saveSeen = () => localStorage.setItem('hudSeen', JSON.stringify(seen));
 const isUnread = s => s.finishedAt != null && seen[s.sid] !== s.finishedAt;
+const unreadCount = list => list.filter(isUnread).length;
 function markRead(s){
   if (s && s.finishedAt != null) { seen[s.sid] = s.finishedAt; saveSeen(); }
 }
@@ -393,6 +419,7 @@ function maybeNotify(list){
     send({cmd:'sound', which: s.waitingAt ? 'needs-you' : 'done'});
     // Un-minimise and flash, so it lands even with notifications switched off.
     if (s.waitingAt) {
+      if (dockSide) peekOut(true);          // come out from the edge
       if (body.classList.contains('min')) setMode('min', false);
       body.classList.remove('alerting');
       void body.offsetWidth;              // restart the animation
@@ -426,12 +453,74 @@ function freezeOrder(){
   frozen = [...$('list-s').children].map(r => r.dataset.k);
 }
 
-/* ---------- window dragging: anywhere that isn't a control ---------- */
+/* ---------- park at a screen edge -----------------------------------------
+   Hidden except for a sliver; hovering the sliver slides it out, leaving the
+   pointer slides it back. Anything that needs you pulls it out by itself. */
+let dockSide = localStorage.getItem('hudDock') || '';
+let peeked = false, peekTimer = null;
+
+window.__dockedSide = side => {           // native confirms which edge it took
+  dockSide = side;
+  localStorage.setItem('hudDock', side);
+  body.classList.toggle('docked', !!side);
+  body.classList.toggle('dock-right', side === 'right');
+  body.classList.toggle('dock-left', side === 'left');
+  if (!side) { peeked = false; body.classList.remove('peeking'); }
+};
+
+// Work out the edge here rather than asking the native side and waiting to be
+// told: if that round trip ever failed, the panel would already have slid off
+// screen while the page still thought it was undocked — so no sliver would be
+// painted and there'd be nothing left to grab.
+function nearerEdge(){
+  const mid = (window.screenX || 0) + (window.outerWidth || 360) / 2;
+  const half = (window.screen && window.screen.availWidth || 1440) / 2;
+  return mid >= half ? 'right' : 'left';
+}
+$('b-dock').onclick = () => {
+  if (dockSide) { window.__dockedSide(''); send({cmd:'dock', side:'', out:true}); }
+  else {
+    peeked = false;
+    const side = nearerEdge();
+    window.__dockedSide(side);        // paint the sliver first, then move
+    send({cmd:'dock', side, out:false});
+  }
+};
+
+function peekOut(on){
+  if (!dockSide || peeked === on) return;
+  peeked = on;
+  body.classList.toggle('peeking', on);
+  send({cmd:'dock', side:dockSide, out:on});
+}
+document.documentElement.addEventListener('mouseenter', () => {
+  clearTimeout(peekTimer);
+  peekOut(true);
+});
+document.documentElement.addEventListener('mouseleave', () => {
+  clearTimeout(peekTimer);
+  peekTimer = setTimeout(() => peekOut(false), 600);
+});
+
+/* ---------- window dragging ------------------------------------------------
+   Grab anywhere. Excluding rows and headers left only the title strip
+   draggable — a sliver of the panel — so moving it meant hitting a target you
+   couldn't see. Instead, arm on mousedown and only start the real drag once
+   the pointer has actually moved a few pixels, which leaves clicks and
+   double-clicks on everything underneath working normally. */
+const DRAG_SLOP = 4;
+let armed = null;
 document.addEventListener('mousedown', e => {
-  if (e.target.closest('.row, .hd, .xbtn, #banner, #badge')) return;
+  if (e.button !== 0) return;
+  armed = {x: e.screenX, y: e.screenY};
+});
+document.addEventListener('mousemove', e => {
+  if (!armed) return;
+  if (Math.abs(e.screenX - armed.x) + Math.abs(e.screenY - armed.y) < DRAG_SLOP) return;
+  armed = null;
   send({cmd:'drag'});
 });
-document.addEventListener('mouseup', () => send({cmd:'dragEnd'}));
+document.addEventListener('mouseup', () => { armed = null; send({cmd:'dragEnd'}); });
 
 /* ---------- collapsible sections ---------- */
 for (const id of ['sec-s','sec-j']) {
@@ -511,6 +600,72 @@ function sync(container, items, key, paint){
   });
 }
 
+/* ---------- background job detail -----------------------------------------
+   "exit 1" is not a diagnosis. Show what the job actually runs and the last
+   real line of its log, then offer the three things you'd do next. */
+let openJob = null, armedStop = null;
+
+function toggleJob(j, row){
+  const existing = row.nextElementSibling;
+  if (existing && existing.classList.contains('jd')) {
+    existing.remove(); openJob = null; armedStop = null; layout(); return;
+  }
+  [...document.querySelectorAll('.jd')].forEach(n => n.remove());
+  openJob = j.label;
+  drawJobPanel(j, row);
+}
+
+function drawJobPanel(j, row){
+  let el = row.nextElementSibling;
+  if (!el || !el.classList.contains('jd')) {
+    el = document.createElement('div');
+    el.className = 'jd';
+    row.after(el);
+  }
+  const age = j.logAge == null ? null
+    : j.logAge > 86400 ? `${(j.logAge/86400).toFixed(0)} days ago`
+    : j.logAge > 3600 ? `${(j.logAge/3600).toFixed(0)}h ago` : 'just now';
+  const state = j.running ? 'running now'
+    : j.failed ? `last exit ${j.exit}`
+    : j.nextTs ? `next in ${dur((j.nextTs - Date.now())/1000)}` : (j.sched || '—');
+
+  el.innerHTML =
+    `<span class="k">Runs</span><span class="v cmd"></span>` +
+    `<span class="k">State</span><span class="v">${state}` +
+      (age ? ` · log written ${age}` : '') + `</span>` +
+    (j.lastLog ? `<span class="k">Last log line</span>
+                  <span class="v ${j.failed ? 'err' : ''} last"></span>` : '') +
+    `<div class="acts">
+       ${j.logPath ? '<span class="act" data-a="log">Open log</span>' : ''}
+       ${j.kind === 'launchd' ? '<span class="act" data-a="run">Run now</span>' : ''}
+       ${j.kind === 'launchd' ? '<span class="act danger" data-a="stop">Disable</span>' : ''}
+     </div>`;
+  el.querySelector('.cmd').textContent = j.cmd || j.label;
+  if (j.lastLog) el.querySelector('.last').textContent = j.lastLog;
+
+  el.querySelectorAll('.act').forEach(btn => {
+    btn.onclick = e => {
+      e.stopPropagation();
+      const a = btn.dataset.a;
+      if (a === 'stop') {
+        // Disabling stops it until it's loaded again — ask twice.
+        if (armedStop !== j.label) {
+          armedStop = j.label;
+          btn.textContent = 'Really disable?';
+          btn.classList.add('arm');
+          setTimeout(() => { if (armedStop === j.label) {
+            armedStop = null; btn.textContent = 'Disable'; btn.classList.remove('arm');
+          }}, 4000);
+          return;
+        }
+        armedStop = null;
+      }
+      send({cmd:'job', action:a, label:j.label, log:j.logPath || ''});
+    };
+  });
+  layout();
+}
+
 /* ---------- geometry ---------- */
 let lastW = 0, lastH = 0;
 function layout(){
@@ -552,6 +707,12 @@ window.render = d => {
     ? `<b class="wait">${waitingNow} waiting on you</b>`
     : c.busy ? `<b>${c.busy} running</b> · ${c.total - c.busy} idle`
     : `${c.total} idle`;
+
+  // The parked sliver is the whole point of docking: colour it by the most
+  // urgent thing going on.
+  document.documentElement.style.setProperty('--edge',
+    waitingNow ? 'var(--wait)' : c.busy ? 'var(--busy)'
+    : unreadCount(sessions) ? 'var(--done)' : 'var(--idle)');
 
   maybeNotify(sessions);
 
@@ -661,6 +822,7 @@ window.render = d => {
     (jc.failed ? ` · <span class="warn">${jc.failed} failed</span>` : '') +
     ` · ${jc.total}`;
   sync($('list-j'), d.jobs, j => 'j' + j.kind + j.label, (row, j) => {
+    row.classList.add('click');
     row.className = 'row ' + (j.failed ? 'fail' : j.running ? 'run' : '');
     let meta;
     if (j.running)     meta = j.sched === 'always on' ? 'on' : 'running';
@@ -672,7 +834,14 @@ window.render = d => {
       `<span class="tty mono">${j.kind === 'cron' ? 'cron' : ''}</span>`;
     row.querySelector('.nm').textContent = j.name;
     row.title = `${j.label}\n${j.sched || ''}`;
+    row.onclick = () => toggleJob(j, row);
   });
+  // keep an open panel in step with fresh data
+  if (openJob) {
+    const j = d.jobs.find(x => x.label === openJob);
+    const row = $('list-j').querySelector(`[data-k="${CSS.escape('j' + (j?j.kind:'') + openJob)}"]`);
+    if (j && row) drawJobPanel(j, row); else openJob = null;
+  }
   if (!d.jobs.length) $('list-j').innerHTML = '<div class="empty">no jobs</div>';
 
   layout();
@@ -683,6 +852,9 @@ $('list-s').addEventListener('pointerleave', () => {
   frozen = null;
   if (lastData) render(lastData);
 });
+
+if (dockSide) { const d = dockSide; dockSide = ''; window.__dockedSide(d);
+                send({cmd:'dock', side:d, out:false}); }
 
 window.__notifyReady = () => { applyNative(); send({cmd:'ready'}); layout(); };
 window.__notifyReady();
