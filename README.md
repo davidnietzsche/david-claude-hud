@@ -216,8 +216,8 @@ ever lose it.
 Drag from **anywhere** on the panel — it only starts moving once you've actually
 moved a few pixels, so clicks and double-clicks underneath still work. Position,
 size, theme and collapsed sections persist.
-There's a `◧` menu-bar item too: Show/Hide, Reset Position, Test Notification,
-Reload, Quit.
+The menu-bar item carries the alert-volume slider, plus Show/Hide, Reset
+Position, Test Notification, Reload and Quit.
 
 ## Sounds
 
@@ -235,6 +235,12 @@ character is a one-liner.
 To use your own, drop a file named `done` or `needs-you` into
 `~/.claude-hud/sounds/` — `.mp3`, `.wav`, `.aiff` or `.m4a`. It wins over the
 bundled pair.
+
+**Alert volume is the app's own**, set from the slider in the menu-bar menu and
+independent of your system output level — so the alerts can stay loud enough to
+reach you while a call or a video plays at whatever volume that needs, or be
+turned right down without touching anything else. Moving the slider plays the
+sound so you can hear what you picked.
 
 The alerts deliberately don't depend on macOS notification permission, which is
 easy to end up denied without noticing: un-minimising, the red pulse, the sound

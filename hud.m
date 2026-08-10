@@ -80,6 +80,8 @@ static void hlog(NSString *fmt, ...) {
 @property (assign) NSInteger charFrame;
 @property (assign) NSInteger unread;
 @property (strong) NSTimer *charTimer;
+@property (assign) float alertVolume;
+@property (strong) NSSlider *volumeSlider;
 @property (strong) NSString *dockSide;   // @"", @"left" or @"right"
 @property (assign) BOOL dockedOut;       // slid out, vs peeking at the edge
 @end
@@ -249,6 +251,8 @@ static void hlog(NSString *fmt, ...) {
 }
 
 - (void)buildStatusItem {
+    NSNumber *v = [[NSUserDefaults standardUserDefaults] objectForKey:@"alertVolume"];
+    self.alertVolume = v ? v.floatValue : 1.0;
     self.statusItem = [[NSStatusBar systemStatusBar]
                        statusItemWithLength:NSVariableStatusItemLength];
     self.statusItem.button.toolTip = @"Claude HUD";
@@ -265,6 +269,22 @@ static void hlog(NSString *fmt, ...) {
                  action:@selector(toggle) keyEquivalent:@""].target = self;
     [m addItemWithTitle:@"Reset Position / Un-park"
                  action:@selector(resetPosition) keyEquivalent:@""].target = self;
+    NSMenuItem *vol = [[NSMenuItem alloc] init];
+    NSView *box = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 200, 40)];
+    NSTextField *lab = [NSTextField labelWithString:@"Alert volume"];
+    lab.frame = NSMakeRect(14, 21, 160, 14);
+    lab.font = [NSFont menuFontOfSize:11];
+    lab.textColor = [NSColor secondaryLabelColor];
+    [box addSubview:lab];
+    self.volumeSlider = [NSSlider sliderWithValue:self.alertVolume minValue:0 maxValue:1
+                                           target:self action:@selector(setVolumeFromSlider:)];
+    self.volumeSlider.frame = NSMakeRect(14, 2, 172, 18);
+    self.volumeSlider.continuous = NO;      // fire once on release, not per pixel
+    [box addSubview:self.volumeSlider];
+    vol.view = box;
+    [m addItem:vol];
+    [m addItem:[NSMenuItem separatorItem]];
+
     [m addItemWithTitle:@"Test Notification"
                  action:@selector(testNotify) keyEquivalent:@""].target = self;
     [m addItemWithTitle:@"Reload"
@@ -443,15 +463,27 @@ static void fillCell(CGFloat x, CGFloat y, CGFloat w, CGFloat h,
 static const CGFloat kPeek = 36.0;   // width of the parked strip
 static const CGFloat kInset = 12.0;
 
+// Corners follow the dock state and nothing else. Keeping this in one place
+// matters: the mask used to be set when docking but never restored when the
+// panel was dragged off an edge, which left it permanently square down one side.
+- (void)updateCorners {
+    CACornerMask all = kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner |
+                       kCALayerMaxXMinYCorner | kCALayerMaxXMaxYCorner;
+    CACornerMask m = all;
+    if (self.dockSide.length) {
+        // Square against the screen edge, rounded on the side facing inward.
+        m = [self.dockSide isEqualToString:@"right"]
+            ? (kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner)
+            : (kCALayerMaxXMinYCorner | kCALayerMaxXMaxYCorner);
+    }
+    self.panel.contentView.layer.maskedCorners = m;
+    self.web.layer.maskedCorners = m;
+    [self.panel invalidateShadow];
+}
+
 - (void)applyDock:(BOOL)animate {
     if (!self.dockSide.length) return;
-    // Flush against the screen edge: round only the two corners facing inward,
-    // otherwise the strip reads as a capsule floating beside the edge.
-    BOOL toRight = [self.dockSide isEqualToString:@"right"];
-    self.panel.contentView.layer.maskedCorners = toRight
-        ? (kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner)
-        : (kCALayerMaxXMinYCorner | kCALayerMaxXMaxYCorner);
-    self.web.layer.maskedCorners = self.panel.contentView.layer.maskedCorners;
+    [self updateCorners];
     NSRect vis = [NSScreen mainScreen].visibleFrame;
     NSRect f = self.panel.frame;
     BOOL right = [self.dockSide isEqualToString:@"right"];
@@ -465,10 +497,7 @@ static const CGFloat kInset = 12.0;
     if (side.length == 0) {
         // Undocked: bring it fully back on screen where it can be dragged.
         self.dockSide = @"";
-        CACornerMask all = kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner |
-                           kCALayerMaxXMinYCorner | kCALayerMaxXMaxYCorner;
-        self.panel.contentView.layer.maskedCorners = all;
-        self.web.layer.maskedCorners = all;
+        [self updateCorners];
         NSRect vis = [NSScreen mainScreen].visibleFrame;
         NSRect f = self.panel.frame;
         f.origin.x = MIN(MAX(f.origin.x, NSMinX(vis) + kInset),
@@ -494,6 +523,16 @@ static const CGFloat kInset = 12.0;
 //
 // Resolution order: your own override, then the pair shipped in the bundle,
 // then a stock system sound if someone stripped the resources out.
+// Alert volume is the app's own, independent of the system output level: the
+// point of these sounds is to reach you across the room while a call or a video
+// is playing at whatever volume that needs.
+- (void)setVolumeFromSlider:(NSSlider *)sender {
+    self.alertVolume = sender.floatValue;
+    [[NSUserDefaults standardUserDefaults] setFloat:self.alertVolume
+                                             forKey:@"alertVolume"];
+    [self playSound:@"done"];        // hear what you just chose
+}
+
 - (void)playSound:(NSString *)which {
     if (![which isEqualToString:@"done"]) which = @"needs-you";
 
@@ -521,6 +560,7 @@ static const CGFloat kInset = 12.0;
         if (snd) cache[which] = snd;
     }
     [snd stop];
+    snd.volume = self.alertVolume;
     [snd play];
 }
 
@@ -717,6 +757,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
         // expect when you grab and pull it.
         if (self.dockSide.length) {
             self.dockSide = @"";
+            [self updateCorners];          // otherwise it stays square-sided
             [self.web evaluateJavaScript:@"window.__dockedSide('')"
                        completionHandler:nil];
         }
