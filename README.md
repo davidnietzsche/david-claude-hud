@@ -141,8 +141,11 @@ Two sounds, chosen so you can tell them apart without looking:
 
 Both are generated, not sampled — `sounds/make-sounds.py` synthesises them with
 nothing but the Python standard library, so there is no audio to license and
-regenerating them with a different character is a one-liner. Drop your own
-`done.wav` / `needs-you.wav` into `~/.claude-hud/sounds/` to override.
+regenerating them with a different character is a one-liner.
+
+To use your own, drop a file named `done` or `needs-you` into
+`~/.claude-hud/sounds/` — `.mp3`, `.wav`, `.aiff` or `.m4a`, whichever you have.
+It takes precedence over the bundled pair.
 
 When a session starts waiting on you, the panel also un-minimises itself, pulses
 a red border, and the character waves. **None of that needs a permission**,

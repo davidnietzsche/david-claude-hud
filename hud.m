@@ -271,11 +271,18 @@ static void hlog(NSString *fmt, ...) {
 
     NSSound *snd = cache[which];
     if (!snd) {
-        NSString *file = [NSString stringWithFormat:@"sounds/%@.wav", which];
-        for (NSString *p in @[[NSHomeDirectory() stringByAppendingPathComponent:
-                                 [@".claude-hud/" stringByAppendingString:file]],
-                              [self.root stringByAppendingPathComponent:file]]) {
-            snd = [[NSSound alloc] initWithContentsOfFile:p byReference:YES];
+        // Your own drop-in wins over the bundled pair. Any common format, so
+        // you can hand it an mp3 straight out of Downloads.
+        NSArray *dirs = @[[NSHomeDirectory() stringByAppendingPathComponent:
+                             @".claude-hud/sounds"],
+                          [self.root stringByAppendingPathComponent:@"sounds"]];
+        for (NSString *dir in dirs) {
+            for (NSString *ext in @[@"wav", @"mp3", @"aiff", @"aif", @"m4a"]) {
+                NSString *p = [dir stringByAppendingPathComponent:
+                    [which stringByAppendingPathExtension:ext]];
+                snd = [[NSSound alloc] initWithContentsOfFile:p byReference:YES];
+                if (snd) break;
+            }
             if (snd) break;
         }
         if (!snd) snd = [NSSound soundNamed:
