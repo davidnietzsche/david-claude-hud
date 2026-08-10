@@ -157,9 +157,10 @@
   body.docked.parked #minstat,
   body.docked.parked .btns{display:none !important}
   body.docked.parked #bar{padding:8px 6px;justify-content:center;border-bottom:none}
-  body.docked.parked #badge{position:absolute;top:2px;right:3px;
-    padding:1px 4px;font-size:8px;border-radius:7px}
-  body.docked.parked .ch{width:26px !important}
+  body.docked.parked #bar{flex-direction:column;gap:3px}
+  body.docked.parked #badge{position:static;margin:0;padding:0 5px;
+    font-size:8.5px;line-height:14px;border-radius:7px}
+  body.docked.parked .ch{width:28px !important}
   body.docked.parked::before{
     content:'';position:fixed;top:0;bottom:0;width:3px;z-index:9;
     background:var(--edge,var(--idle));transition:background .3s}

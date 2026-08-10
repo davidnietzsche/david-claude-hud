@@ -47,8 +47,19 @@ static void hlog(NSString *fmt, ...) {
 
 @implementation HUDPanel
 - (NSTimeInterval)animationResizeTime:(NSRect)r { return 0.13; }
+// Without this the first click on an inactive panel is spent activating it,
+// so moving the HUD took two clicks: one to wake it, one to actually drag.
+- (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
 - (BOOL)canBecomeKeyWindow { return YES; }
 - (BOOL)canBecomeMainWindow { return NO; }
+@end
+
+// The web view has to accept the first mouse too — otherwise it swallows the
+// click that reaches it rather than passing it to the page.
+@interface HUDWebView : WKWebView
+@end
+@implementation HUDWebView
+- (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
 @end
 
 #pragma mark - Controller
@@ -56,7 +67,7 @@ static void hlog(NSString *fmt, ...) {
 @interface HUD : NSObject <WKScriptMessageHandler, WKNavigationDelegate,
                            NSApplicationDelegate, UNUserNotificationCenterDelegate>
 @property (strong) HUDPanel *panel;
-@property (strong) WKWebView *web;
+@property (strong) HUDWebView *web;
 @property (strong) NSStatusItem *statusItem;
 @property (strong) NSTimer *timer;
 @property (strong) NSString *root;
@@ -204,7 +215,7 @@ static void hlog(NSString *fmt, ...) {
 
     WKWebViewConfiguration *cfg = [WKWebViewConfiguration new];
     [cfg.userContentController addScriptMessageHandler:self name:@"hud"];
-    self.web = [[WKWebView alloc] initWithFrame:root.bounds configuration:cfg];
+    self.web = [[HUDWebView alloc] initWithFrame:root.bounds configuration:cfg];
     self.web.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.web.navigationDelegate = self;
     // WKWebView renders through its own remote layer tree, which the parent's
@@ -338,7 +349,7 @@ static void hlog(NSString *fmt, ...) {
 // Parked, only a few pixels stay on screen; the page paints that sliver in the
 // current state colour, so a glance at the screen edge still tells you whether
 // anything needs you — without the panel covering what you're presenting.
-static const CGFloat kPeek = 46.0;   // leaves the character visible
+static const CGFloat kPeek = 46.0;   // width of the parked strip
 static const CGFloat kInset = 12.0;
 
 - (void)applyDock:(BOOL)animate {
