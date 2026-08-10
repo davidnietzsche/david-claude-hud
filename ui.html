@@ -15,9 +15,12 @@
     --track: rgba(0,0,0,.13);
     --hover: rgba(0,0,0,.06);
     --idle:  rgba(0,0,0,.30);
-    --busy:  #c26a00;
-    --done:  #12833f;
+    --busy:  #c26a00;   /* working — in progress */
+    --wait:  #d32f2f;   /* needs you — you are the blocker */
+    --done:  #12833f;   /* finished */
     --fail:  #c62828;
+    --waitBg:  rgba(211,47,47,.12);
+    --waitLine:rgba(211,47,47,.38);
     --bannerBg:  rgba(18,131,63,.13);
     --bannerLine:rgba(18,131,63,.40);
   }
@@ -31,8 +34,11 @@
     --hover: rgba(255,255,255,.07);
     --idle:  rgba(255,255,255,.30);
     --busy:  #ffb84d;
+    --wait:  #ff7a6b;
     --done:  #3ddc84;
     --fail:  #ff6b6b;
+    --waitBg:  rgba(255,122,107,.16);
+    --waitLine:rgba(255,122,107,.42);
     --bannerBg:  rgba(61,220,132,.14);
     --bannerLine:rgba(61,220,132,.34);
   }
@@ -60,7 +66,7 @@
   #tally{margin-left:auto;font-size:11px;color:var(--fg2);white-space:nowrap;
        overflow:hidden;text-overflow:ellipsis;min-width:0}
   #tally b{color:var(--busy);font-weight:700}
-  #tally b.wait{color:var(--fail)}
+  #tally b.wait{color:var(--wait)}
   #minstat{display:none;font-size:10.5px;color:var(--fg3);white-space:nowrap}
   body.min #minstat{display:inline}
   .btns{display:flex;gap:2px;flex:none;margin-left:4px}
@@ -126,17 +132,17 @@
   @keyframes chHop{0%,100%{transform:translateY(0)}45%{transform:translateY(-4px)}}
   @keyframes chWave{0%,100%{transform:rotate(-20deg)}50%{transform:rotate(-65deg)}}
   @keyframes chBang{0%,100%{opacity:1}50%{opacity:.25}}
-  .ch .bang{display:none;fill:var(--fail)}
+  .ch .bang{display:none;fill:var(--wait)}
   .ch .arm-l{transform-origin:2px 3px}
   .ch .arm-r{transform-origin:9px 3px}
   .ch .eyes{transform-origin:5.5px 1.5px}
 
   /* a session blocked on you outranks everything else */
-  .row.waiting{background:rgba(194,106,0,.14)}
-  body.dark .row.waiting{background:rgba(255,184,77,.14)}
-  .row.waiting .st{background:var(--busy);animation:chBang .8s ease-in-out infinite}
+  .row.waiting{background:var(--waitBg);
+               box-shadow:inset 2px 0 0 var(--wait)}
+  .row.waiting .st{background:var(--wait);animation:chBang .8s ease-in-out infinite}
   .row.waiting .nm{color:var(--fg);font-weight:700}
-  .row.waiting .meta{color:var(--busy);font-weight:700}
+  .row.waiting .meta{color:var(--wait);font-weight:700}
 
   /* ---------- collapsed (minimised) ---------- */
   body.min .sec,body.min #banner{display:none !important}
@@ -150,8 +156,8 @@
      panel raises its own alarm: it is always on top anyway. */
   body.alerting{animation:alertPulse .7s ease-in-out 6}
   @keyframes alertPulse{
-    0%,100%{box-shadow:inset 0 0 0 0 rgba(198,40,40,0)}
-    50%    {box-shadow:inset 0 0 0 3px rgba(198,40,40,.85)}
+    0%,100%{box-shadow:inset 0 0 0 0 transparent}
+    50%    {box-shadow:inset 0 0 0 3px var(--waitLine)}
   }
 
   /* ---------- finished banner ---------- */
@@ -214,6 +220,7 @@
   body.compact .row{padding:3px 5px;gap:6px}
   .row:hover{background:var(--hover)}
   .row .st{width:6px;height:6px;border-radius:50%;flex:none;background:var(--idle)}
+  .row.busy{box-shadow:inset 2px 0 0 var(--busy)}
   .row.busy .st{background:var(--busy);animation:breathe 1.5s ease-in-out infinite}
   .row.done .st{background:var(--done);box-shadow:0 0 6px var(--done)}
   .row.fail .st{background:var(--fail)}
@@ -241,6 +248,12 @@
   .row .prov{flex:none;font-size:8.5px;font-weight:800;letter-spacing:.05em;
              text-transform:uppercase;opacity:.9}
   body.single-provider .row .prov{display:none}
+  /* push a "needs you" down when it isn't actually urgent */
+  .row .push{display:none;flex:none;font-size:11px;line-height:1;color:var(--fg3);
+             padding:2px 4px;border-radius:4px}
+  .row.waiting:hover .push{display:inline-block}
+  .row .push:hover{color:var(--fg);background:var(--track)}
+  .row.pushed .st{opacity:.5}
   .row .mem{flex:none;font-size:10px;color:var(--fg2);min-width:40px;
             text-align:right;font-weight:600}
   .row.heavy .mem{color:var(--fail)}
@@ -392,6 +405,29 @@ function maybeNotify(list){
   if (changed) localStorage.setItem('hudNotified', JSON.stringify(notified));
 }
 
+/* ---------- de-prioritised "needs you" ------------------------------------
+   Keyed by the waiting timestamp, so pushing one down is only for *this*
+   interruption — if the same session asks again later it comes straight back
+   to the top. */
+let pushed = {};
+try { pushed = JSON.parse(localStorage.getItem('hudPushed') || '{}'); } catch(e){}
+const isWaiting = s => s.status === 'waiting' && pushed[s.sid] !== s.waitingAt;
+function pushDown(s){
+  if (s.waitingAt != null) {
+    pushed[s.sid] = s.waitingAt;
+    localStorage.setItem('hudPushed', JSON.stringify(pushed));
+  }
+}
+
+/* ---------- keep the list still under the cursor ---------------------------
+   Rank changes (marking one read, one going idle) used to re-sort the list
+   mid-click, so the second half of a double click landed on whatever row had
+   slid into that spot. Freeze the order while the pointer is inside it. */
+let frozen = null;
+function freezeOrder(){
+  frozen = [...$('list-s').children].map(r => r.dataset.k);
+}
+
 /* ---------- window dragging: anywhere that isn't a control ---------- */
 document.addEventListener('mousedown', e => {
   if (e.target.closest('.row, .hd, .xbtn, #banner, #badge')) return;
@@ -428,7 +464,7 @@ const bytes = b => b == null ? ''
 const PAL = {
   light:{fail:'#c62828', busy:'#c26a00', done:'#12833f', calm:'rgba(0,0,0,.45)'},
   dark: {fail:'#ff6b6b', busy:'#ffb84d', done:'#3ddc84', calm:'rgba(255,255,255,.62)'}
-};
+};  // meters only — row/state colours live in CSS custom properties
 const pal = () => PAL[body.classList.contains('dark') ? 'dark' : 'light'];
 const loadColor  = p => { const c = pal();
   return p > 85 ? c.fail : p > 60 ? c.busy : c.done; };
@@ -493,18 +529,31 @@ window.render = d => {
   lastData = d;
   const c = d.counts;
   // SVG elements need setAttribute — .className is a read-only SVGAnimatedString
-  $('ch').setAttribute('class',
-    'ch ' + (c.waiting ? 'wait' : c.busy ? 'work' : 'rest'));
-  $('tally').innerHTML = c.waiting
-    ? `<b class="wait">${c.waiting} waiting on you</b>`
-    : c.busy ? `<b>${c.busy} running</b> · ${c.total - c.busy} idle`
-    : `${c.total} idle`;
+  // (character + tally are set below, once demotions are known)
 
   /* running first, then anything unopened, then the rest */
-  const rank = s => s.status === 'waiting' ? 0 : s.status === 'busy' ? 1
+  const rank = s => isWaiting(s) ? 0 : s.status === 'busy' ? 1
                   : isUnread(s) ? 2 : s.status === 'done' ? 3 : 4;
   const sessions = d.sessions.slice()
     .sort((a,b) => rank(a) - rank(b) || a.idleFor - b.idleFor);
+
+  // While the pointer is over the list, keep whatever order it already had.
+  if (frozen) {
+    const at = new Map(frozen.map((k, i) => [k, i]));
+    const seat = s => at.has('s' + s.sid) ? at.get('s' + s.sid) : 1e9;
+    sessions.sort((a, b) => seat(a) - seat(b));
+  }
+
+  const waitingNow = sessions.filter(isWaiting).length;
+
+  // A pushed-down alert must also stop the character waving and stop shouting
+  // in the title bar — that's what "not prioritised" has to mean.
+  $('ch').setAttribute('class',
+    'ch ' + (waitingNow ? 'wait' : c.busy ? 'work' : 'rest'));
+  $('tally').innerHTML = waitingNow
+    ? `<b class="wait">${waitingNow} waiting on you</b>`
+    : c.busy ? `<b>${c.busy} running</b> · ${c.total - c.busy} idle`
+    : `${c.total} idle`;
 
   maybeNotify(sessions);
 
@@ -579,6 +628,7 @@ window.render = d => {
         : dur(s.idleFor);
     row.innerHTML = `<span class="st"></span><span class="nm"></span>` +
       `<span class="new">NEW</span>` +
+      `<span class="push" title="Not urgent — push this down">↓</span>` +
       `<span class="prov"></span>` +
       `<span class="meta mono">${meta}</span>` +
       `<span class="mem mono">${bytes(s.mem)}</span>`;
@@ -586,11 +636,20 @@ window.render = d => {
     const pv = row.querySelector('.prov');
     pv.textContent = s.providerLabel;
     pv.style.color = s.colour;
-    row.title = `${s.providerLabel}${s.exact ? '' : ' (state inferred from CPU)'}\n` +
+    row.title = `Double-click to open this terminal\n` +
+      `${s.providerLabel}${s.exact ? '' : ' (state inferred from CPU)'}\n` +
       `${s.name}\npid ${s.pid} · ${s.devtty}\n` +
       `RAM ${bytes(s.mem)} (process tree) · CPU ${s.treeCpu}%\n` +
       `up ${s.uptime}\n${s.cwd}`;
-    row.onclick = () => {
+    row.querySelector('.push').onclick = e => {
+      e.stopPropagation();
+      pushDown(s);
+      render(d);
+    };
+    // Double click, not single: a single click used to jump *and* re-rank the
+    // row out from under the pointer.
+    row.onclick = null;
+    row.ondblclick = () => {
       markRead(s);
       send({cmd:"focus", tty:s.devtty});
       render(d);
@@ -620,6 +679,12 @@ window.render = d => {
 
   layout();
 };
+
+$('list-s').addEventListener('pointerenter', freezeOrder);
+$('list-s').addEventListener('pointerleave', () => {
+  frozen = null;
+  if (lastData) render(lastData);
+});
 
 window.__notifyReady = () => { applyNative(); send({cmd:'ready'}); layout(); };
 window.__notifyReady();

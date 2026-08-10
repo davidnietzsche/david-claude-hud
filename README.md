@@ -38,12 +38,27 @@ It sorts itself to the top of the list, and the count rides on the menu-bar icon
 (`◧3`) even when the panel is hidden. The only thing that clears it is you
 actually going and looking. That's the entire point.
 
-**Click the row, land in the right terminal.** No hunting. The window comes
-forward with the correct tab already selected.
+**Double-click the row, land in the right terminal.** No hunting. The window
+comes forward with the correct tab already selected.
 
 **Anything blocked on you shouts.** A session waiting for permission jumps to
-the top in amber reading `needs you`, the panel un-minimises itself, pulses red,
-and plays a sound. You can't scroll past it.
+the top in **red** reading `needs you`, the panel un-minimises itself, pulses,
+and plays a sound. You can't scroll past it. Not actually urgent? Hover it and
+hit `↓` to push it back down — the character stops waving and the title bar
+stops shouting. If that session asks again later, it comes straight back up.
+
+The three states never share a colour, so the list reads at a glance:
+
+| | | |
+|---|---|---|
+| 🔴 red | `needs you` | you are the blocker |
+| 🟠 amber | working | still cooking, leave it |
+| 🟢 green | `✓ done` | finished, go and look |
+
+**Double-click a row** to jump to its terminal — and while your pointer is over
+the list, nothing re-orders under it. A single click used to jump *and* re-rank
+the row out from under the cursor, so the second half of a double click landed
+on whatever had slid into that spot.
 
 ## The little guy
 

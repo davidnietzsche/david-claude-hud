@@ -268,6 +268,13 @@ def newest_log_mtime(pattern):
         return 0
 
 
+def drop_attention(sid):
+    try:
+        os.remove(os.path.join(ATTN_DIR, sid + ".json"))
+    except OSError:
+        pass
+
+
 def read_attention():
     """Sessions an agent has asked for a human about, dropped by its hook.
     Keyed by session id."""
@@ -385,6 +392,14 @@ def collect_sessions(now_ms):
                    "cpusec": cpusec, "changed": changed})
 
         wait = attn.get(sid)
+        if wait and busy:
+            # A session that is actively working cannot be blocked on a human.
+            # The clearing hook doesn't fire when you answer a *permission*
+            # prompt — nothing was submitted — so the marker would otherwise
+            # survive and show a stale "needs you" over a running session.
+            drop_attention(sid)
+            wait = None
+
         if wait:
             bucket = "waiting"
         elif busy:
