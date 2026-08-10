@@ -440,11 +440,18 @@ static void fillCell(CGFloat x, CGFloat y, CGFloat w, CGFloat h,
 // Parked, only a few pixels stay on screen; the page paints that sliver in the
 // current state colour, so a glance at the screen edge still tells you whether
 // anything needs you — without the panel covering what you're presenting.
-static const CGFloat kPeek = 46.0;   // width of the parked strip
+static const CGFloat kPeek = 36.0;   // width of the parked strip
 static const CGFloat kInset = 12.0;
 
 - (void)applyDock:(BOOL)animate {
     if (!self.dockSide.length) return;
+    // Flush against the screen edge: round only the two corners facing inward,
+    // otherwise the strip reads as a capsule floating beside the edge.
+    BOOL toRight = [self.dockSide isEqualToString:@"right"];
+    self.panel.contentView.layer.maskedCorners = toRight
+        ? (kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner)
+        : (kCALayerMaxXMinYCorner | kCALayerMaxXMaxYCorner);
+    self.web.layer.maskedCorners = self.panel.contentView.layer.maskedCorners;
     NSRect vis = [NSScreen mainScreen].visibleFrame;
     NSRect f = self.panel.frame;
     BOOL right = [self.dockSide isEqualToString:@"right"];
@@ -458,6 +465,10 @@ static const CGFloat kInset = 12.0;
     if (side.length == 0) {
         // Undocked: bring it fully back on screen where it can be dragged.
         self.dockSide = @"";
+        CACornerMask all = kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner |
+                           kCALayerMaxXMinYCorner | kCALayerMaxXMaxYCorner;
+        self.panel.contentView.layer.maskedCorners = all;
+        self.web.layer.maskedCorners = all;
         NSRect vis = [NSScreen mainScreen].visibleFrame;
         NSRect f = self.panel.frame;
         f.origin.x = MIN(MAX(f.origin.x, NSMinX(vis) + kInset),
@@ -754,7 +765,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
         // Floor of 40, not 200: the parked strip is deliberately narrow, and a
         // 200pt floor left the character centred in a window whose visible
         // sliver was only 46pt wide — i.e. drawn entirely off screen.
-        w = MAX(40, MIN(w, 600));
+        w = MAX(28, MIN(w, 600));
         NSRect f = self.panel.frame;
         if (fabs(f.size.height - h) < 1.5 && fabs(f.size.width - w) < 1.5) return;
         f.origin.y += f.size.height - h;   // keep the top-left corner pinned

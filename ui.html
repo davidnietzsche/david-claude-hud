@@ -147,25 +147,28 @@
      Only ~6px stays on screen. That sliver is painted in the current state
      colour, so the edge of your screen still answers "does anything need me?"
      while the panel itself is out of the way. */
-  /* Parked: everything hides except the character, so you can still see
-     whether he's dancing, asleep, or waving without pulling the panel out.
-     A thin state-coloured line runs down the exposed edge. */
+  /* Parked: a slim tab flush against the screen edge. Everything goes except
+     the character and a small count — the point is a glanceable state, not a
+     miniature panel. */
   body.docked.parked #meters,
   body.docked.parked .sec,
   body.docked.parked #banner,
   body.docked.parked #tally,
   body.docked.parked #minstat,
   body.docked.parked .btns{display:none !important}
-  body.docked.parked #bar{padding:8px 6px;justify-content:center;border-bottom:none}
-  body.docked.parked #bar{flex-direction:column;gap:3px}
-  body.docked.parked #badge{position:static;margin:0;padding:0 5px;
-    font-size:8.5px;line-height:14px;border-radius:7px}
-  body.docked.parked .ch{width:28px !important}
-  body.docked.parked::before{
-    content:'';position:fixed;top:0;bottom:0;width:3px;z-index:9;
-    background:var(--edge,var(--idle));transition:background .3s}
-  body.docked.parked.dock-right::before{left:0}
-  body.docked.parked.dock-left::before{right:0}
+  body.docked.parked{background:var(--panel)}
+  body.docked.parked #bar{flex-direction:column;gap:4px;
+    padding:8px 4px 7px;border-bottom:none;align-items:center}
+  body.docked.parked .ch{width:24px !important}
+  /* count only — "4 NEW" wrapped onto two lines and swamped the character */
+  body.docked.parked #badge{position:static;margin:0;min-width:14px;height:14px;
+    padding:0 3px;font-size:9px;font-weight:800;line-height:14px;
+    border-radius:7px;justify-content:center;
+    background:var(--edge,var(--done));color:#fff}
+  /* state carried by a dot, not a slab of colour down the side */
+  body.docked.parked #bar::after{content:'';width:5px;height:5px;flex:none;
+    border-radius:50%;background:var(--edge,var(--idle));transition:background .3s}
+  body.docked.parked.has-badge #bar::after{display:none}
 
   /* ---------- collapsed (minimised) ---------- */
   body.min .sec,body.min #banner{display:none !important}
@@ -516,6 +519,7 @@ function peekOut(on){
   // Let the layout settle at its new width before the window moves, or the
   // panel slides out still sized for the strip.
   requestAnimationFrame(() => {
+    if (lastData) render(lastData);   // badge changes shape when parked
     layout();
     send({cmd:'dock', side:dockSide, out:on});
   });
@@ -718,7 +722,7 @@ function drawJobPanel(j, row){
 /* ---------- geometry ---------- */
 let lastW = 0, lastH = 0;
 function layout(){
-  const w = body.classList.contains('parked') ? 46
+  const w = body.classList.contains('parked') ? 36
           : body.classList.contains('compact') ? 284 : 360;
   const h = Math.ceil(body.getBoundingClientRect().height) + 2;
   if (w !== lastW || Math.abs(h - lastH) > 1) {
@@ -767,8 +771,11 @@ window.render = d => {
   maybeNotify(sessions);
 
   const unread = sessions.filter(isUnread);
+  const parked = body.classList.contains('parked');
   $('badge').className = unread.length ? 'on' : '';
-  $('badge').textContent = unread.length ? `${unread.length} NEW` : '';
+  $('badge').textContent = unread.length ? (parked ? `${unread.length}`
+                                                   : `${unread.length} NEW`) : '';
+  body.classList.toggle('has-badge', !!unread.length);
   // The menu bar mirrors the character, so it stays readable with the panel
   // hidden entirely.
   send({cmd:'badge', n:unread.length,

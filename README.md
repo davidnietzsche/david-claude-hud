@@ -206,13 +206,12 @@ python3 hooks/install-hooks.py --remove
 | `✕` | quit |
 | `⌃⌥H` | show / hide from anywhere |
 
-**Park it out of the way** when you're presenting or need the screen: `⇥` slides
-the panel off the nearest edge, leaving just a narrow strip — **with the
-character still in it**, so you can see at a glance whether he's dancing, asleep
-or waving without pulling the panel back out. A state-coloured line runs down
-the exposed edge, and the unread count sits in the corner. Hover to slide out;
-anything that needs you pulls it out by itself. Menu bar → Reset Position
-un-parks it if you ever lose it.
+**Park it out of the way** when you're presenting or need the screen: `⇥` turns
+the panel into a 36pt tab flush against the nearest screen edge — square on the
+edge side, rounded on the inside — holding **the character and nothing else**,
+plus a small count when something is unread. Hover to slide out; anything that
+needs you pulls it out by itself. Menu bar → Reset Position un-parks it if you
+ever lose it.
 
 Drag from **anywhere** on the panel — it only starts moving once you've actually
 moved a few pixels, so clicks and double-clicks underneath still work. Position,
