@@ -770,6 +770,19 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
     } else if ([cmd isEqualToString:@"focus"]) {
         [self focusTTY:b[@"tty"] winId:b[@"winId"]];
 
+    } else if ([cmd isEqualToString:@"quitApp"]) {
+        // Ask the app to quit rather than killing it, so it can prompt about
+        // unsaved work. The UI has already confirmed twice by this point.
+        pid_t pid = (pid_t)[b[@"pid"] intValue];
+        NSRunningApplication *app =
+            [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+        if (app) {
+            hlog(@"asking %@ to quit", app.localizedName ?: b[@"name"]);
+            [app terminate];
+        } else {
+            hlog(@"no running application for pid %d (%@)", pid, b[@"name"]);
+        }
+
     } else if ([cmd isEqualToString:@"job"]) {
         [self runJobAction:b[@"action"] label:b[@"label"] log:b[@"log"]];
 

@@ -109,6 +109,19 @@ instead is whether the machine is about to throttle you, which is the part that
 actually matters; it turns red at `hot` and `throttling`. The battery figure
 rides alongside as context.
 
+**Click `TEMP` to see what's causing it.** A temperature you can't act on is
+just a number, so this names the apps actually burning CPU — grouped per app
+rather than per helper process, so it says "Lark" rather than four rows of
+`Lark Helper (Renderer)` — and offers to **Quit** them. It asks twice, and asks
+the app to quit rather than killing it, so it can still prompt about unsaved
+work.
+
+Two things it deliberately won't offer to close: anything the system needs, and
+your own agent sessions. WindowServer running hot is a *symptom* — it draws the
+screen, so it burns CPU because something else is redrawing constantly — and
+the panel says so rather than pointing you at the wrong target. Your sessions
+point you at the session list instead, where you can see which ones they are.
+
 **Background jobs** — every launchd agent and crontab entry: running ones green,
 failed ones red with their exit code, scheduled ones with time until next run.
 Switching this on for the first time usually turns up a couple of cron jobs that

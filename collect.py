@@ -276,6 +276,106 @@ def drop_attention(sid):
         pass
 
 
+# Processes that keep the machine running. Never offered as something to close,
+# however much CPU they're using — WindowServer being busy is a symptom of some
+# other app redrawing constantly, not a cause you can act on.
+HEAT_PROTECTED = {
+    "windowserver", "kernel_task", "launchd", "loginwindow", "coreaudiod",
+    "systemuiserver", "dock", "finder", "controlcenter", "notificationcenter",
+    "mds", "mds_stores", "mdworker", "backupd", "cloudd", "bird",
+    "logd", "syslogd", "distnoted", "opendirectoryd", "hidd", "powerd",
+}
+HEAT_MIN_CPU = 8.0     # below this it isn't what's making the machine hot
+
+
+def app_name(path):
+    """The user application a path belongs to, if any.
+
+    Two traps: the trailing slash matters, or `/com.apple.WebKit.GPU.xpc`
+    matches on the `.app` inside `com.apple`; and plenty of non-apps ship an
+    embedded .app bundle (the system Python lives in one), so only bundles that
+    a person could actually quit count."""
+    m = re.search(r"/([^/]+)\.app/", path)
+    if not m:
+        return None
+    if not re.match(r"^(/Applications/|/System/Applications/|"
+                    r"/Users/[^/]+/Applications/)", path):
+        return None
+    return m.group(1)
+
+
+def collect_heat(snap, kids, agent_pids):
+    """What is actually making the machine hot, grouped the way a person thinks
+    about it: one entry per app rather than per helper process.
+
+    Uses ps's decaying %CPU rather than an instantaneous sample — for "what has
+    been cooking the machine" a short average is the honest number."""
+    groups = {}
+
+    def bucket(name, pid, kind):
+        return groups.setdefault(name, {"name": name, "cpu": 0.0, "mem": 0,
+                                        "pid": pid, "count": 0, "kind": kind})
+
+    for pid, p in snap.items():
+        if p["cpu"] < 1.0:
+            continue
+        owns_tty = p["tty"] not in ("??", "-", "")
+
+        # 1. Anything under one of your agent sessions is that session's heat.
+        #    Without this the whole fleet lands on Terminal, which is useless:
+        #    you'd be told to quit the terminal rather than look at a session.
+        root, hops = pid, 0
+        agent = None
+        while root and hops < 8:
+            if root in agent_pids:
+                agent = root
+                break
+            q = snap.get(root)
+            if not q:
+                break
+            root, hops = q["ppid"], hops + 1
+
+        if agent is not None:
+            g = bucket("Your agent sessions", agent, "agent")
+        elif not owns_tty:
+            # 2. A GUI helper belongs to the app that owns it.
+            name, owner, hops = None, pid, 0
+            while owner and hops < 6:
+                q = snap.get(owner)
+                if not q:
+                    break
+                name = app_name(q["comm"])
+                if name:
+                    break
+                owner, hops = q["ppid"], hops + 1
+            # Only something that resolved to a real .app bundle can be asked
+            # to quit; a bare helper process would either ignore it or respawn,
+            # so it's shown but not offered as an action.
+            if not name:
+                name, owner = os.path.basename(p["comm"]).lstrip("-"), pid
+                g = bucket(name, owner, "proc")
+            else:
+                g = bucket(name, owner, "app")
+        else:
+            # 3. A plain command line stands on its own.
+            g = bucket(os.path.basename(p["comm"]).lstrip("-"), pid, "proc")
+
+        g["cpu"] += p["cpu"]
+        g["mem"] += p["rss"]
+        g["count"] += 1
+
+    out = []
+    for g in groups.values():
+        if g["cpu"] < HEAT_MIN_CPU:
+            continue
+        if g["name"].lower() in HEAT_PROTECTED:
+            g["kind"] = "system"
+        g["cpu"] = round(g["cpu"], 1)
+        out.append(g)
+    out.sort(key=lambda g: -g["cpu"])
+    return out[:6]
+
+
 def read_attention():
     """Sessions an agent has asked for a human about, dropped by its hook.
     Keyed by session id."""
@@ -780,6 +880,8 @@ def main():
     now_ms = int(time.time() * 1000)
 
     sessions = collect_sessions(now_ms)
+    snap2, kids2 = ps_snapshot()
+    heat = collect_heat(snap2, kids2, {s["pid"] for s in sessions})
     jobs = collect_launchd(now) + collect_cron(now)
     jobs.sort(key=lambda j: (not j["running"], not j["failed"],
                              j["nextTs"] or 9e18, j["name"]))
@@ -796,6 +898,7 @@ def main():
             "mem": sum(s["mem"] for s in sessions),
         },
         "usage": collect_usage(),
+        "heat": heat,
         "jobs": jobs,
         "jobCounts": {
             "running": sum(1 for j in jobs if j["running"]),

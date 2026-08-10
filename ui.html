@@ -216,6 +216,21 @@
   .m .val{font-size:10.5px;color:var(--fg2);text-align:right;white-space:nowrap}
   body.compact .m .val{font-size:9.5px}
   .m .val em{font-style:normal;color:var(--fg);font-weight:600}
+  /* what's making it hot, and what you can do about it */
+  #m-temp{cursor:default}
+  #m-temp .lbl::after{content:' ▸';font-size:7px;opacity:.5}
+  #heat{display:none;margin:2px 10px 8px;padding:8px 10px;border-radius:7px;
+        background:var(--hover);font-size:10.5px}
+  #heat.on{display:block}
+  #heat .hr{display:flex;align-items:center;gap:8px;padding:3px 0}
+  #heat .hn{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+            color:var(--fg2)}
+  #heat .hc{flex:none;font-weight:700;color:var(--fg)}
+  #heat .ha{flex:none;padding:2px 8px;border-radius:5px;background:var(--track);
+            font-size:9.5px;font-weight:600;color:var(--fg2)}
+  #heat .ha:hover{background:var(--fg3);color:var(--panel)}
+  #heat .ha.arm{background:var(--fail);color:#fff}
+  #heat .note{color:var(--fg3);font-size:9.5px;padding-top:5px;line-height:1.4}
   /* serious/critical means macOS is actively throttling you */
   .m.alarm .lbl{color:var(--fail);font-weight:700}
   .m.alarm .val{color:var(--fail)}
@@ -366,6 +381,8 @@
     <span class="bar"><span class="fill" id="f-wk"></span></span>
     <span class="val" id="v-wk">—</span></div>
 </div>
+
+<div id="heat"></div>
 
 <div class="sec" id="sec-s">
   <div class="hd"><span class="car">▶</span><span class="nm">Sessions</span>
@@ -653,6 +670,66 @@ function sync(container, items, key, paint){
   });
 }
 
+/* ---------- what's making it hot ------------------------------------------
+   A temperature on its own is a fact you can't act on. This names the apps
+   actually burning CPU and offers to close them — asking twice, and never for
+   anything the system needs. */
+let heatOpen = false, armedQuit = null;
+$('m-temp').onclick = () => { heatOpen = !heatOpen; if (lastData) render(lastData); };
+
+function drawHeat(list){
+  const el = $('heat');
+  if (!heatOpen || !list || !list.length) { el.className = ''; return; }
+  el.className = 'on';
+  el.innerHTML = '';
+  for (const h of list) {
+    const row = document.createElement('div');
+    row.className = 'hr';
+    row.innerHTML = `<span class="hn"></span><span class="hc">${h.cpu.toFixed(0)}%</span>`;
+    row.querySelector('.hn').textContent =
+      h.name + (h.count > 1 ? ` (${h.count})` : '');
+
+    if (h.kind === 'app') {
+      const b = document.createElement('span');
+      b.className = 'ha';
+      b.textContent = 'Quit';
+      b.onclick = e => {
+        e.stopPropagation();
+        // Quitting can lose unsaved work, so it asks twice and then asks the
+        // app to quit rather than killing it.
+        if (armedQuit !== h.pid) {
+          armedQuit = h.pid;
+          b.textContent = 'Really quit?';
+          b.classList.add('arm');
+          setTimeout(() => { if (armedQuit === h.pid) {
+            armedQuit = null; b.textContent = 'Quit'; b.classList.remove('arm');
+          }}, 4000);
+          return;
+        }
+        armedQuit = null;
+        send({cmd:'quitApp', pid:h.pid, name:h.name});
+      };
+      row.appendChild(b);
+    } else if (h.kind === 'agent') {
+      const b = document.createElement('span');
+      b.className = 'ha';
+      b.textContent = 'See below';
+      b.onclick = e => { e.stopPropagation(); heatOpen = false; render(lastData); };
+      row.appendChild(b);
+    }
+    el.appendChild(row);
+  }
+  const sys = list.some(h => h.kind === 'system');
+  if (sys) {
+    const n = document.createElement('div');
+    n.className = 'note';
+    n.textContent = 'WindowServer draws the screen — it runs hot because '
+      + 'something else is redrawing constantly, so close that instead.';
+    el.appendChild(n);
+  }
+  layout();
+}
+
 /* ---------- background job detail -----------------------------------------
    "exit 1" is not a diagnosis. Show what the job actually runs and the last
    real line of its log, then offer the three things you'd do next. */
@@ -767,6 +844,8 @@ window.render = d => {
   document.documentElement.style.setProperty('--edge',
     waitingNow ? 'var(--wait)' : c.busy ? 'var(--busy)'
     : unreadCount(sessions) ? 'var(--done)' : 'var(--idle)');
+
+  drawHeat(d.heat);
 
   maybeNotify(sessions);
 
