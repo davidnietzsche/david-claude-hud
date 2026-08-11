@@ -493,7 +493,13 @@ function maybeNotify(list){
     send({cmd:'sound', which: s.waitingAt ? 'needs-you' : 'done'});
     // Un-minimise and flash, so it lands even with notifications switched off.
     if (s.waitingAt) {
-      if (dockSide) peekOut(true);          // come out from the edge
+      if (dockSide) {
+        peekOut(true);                      // come out from the edge
+        clearTimeout(autoParkTimer);
+        autoParkTimer = setTimeout(() => {
+          if (!pointerInside) peekOut(false);
+        }, AUTO_PARK_MS);
+      }
       if (body.classList.contains('min')) setMode('min', false);
       body.classList.remove('alerting');
       void body.offsetWidth;              // restart the animation
@@ -534,6 +540,12 @@ function freezeOrder(){
    pointer slides it back. Anything that needs you pulls it out by itself. */
 let dockSide = localStorage.getItem('hudDock') || '';
 let peeked = false, peekTimer = null;
+// An alert slides the panel out on its own. If you never go near it, nothing
+// used to slide it back — it just sat there covering your work. Give it a
+// window to be noticed in, then park it again; the menu-bar character and the
+// unread count keep signalling either way.
+const AUTO_PARK_MS = 8000;
+let pointerInside = false, autoParkTimer = null;
 
 window.__dockedSide = side => {           // native confirms which edge it took
   dockSide = side;
@@ -592,10 +604,13 @@ function peekOut(on){
   });
 }
 document.documentElement.addEventListener('mouseenter', () => {
+  pointerInside = true;
   clearTimeout(peekTimer);
+  clearTimeout(autoParkTimer);      // you're looking at it; it stays out
   peekOut(true);
 });
 document.documentElement.addEventListener('mouseleave', () => {
+  pointerInside = false;
   clearTimeout(peekTimer);
   peekTimer = setTimeout(() => peekOut(false), 600);
 });
