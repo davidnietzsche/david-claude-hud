@@ -895,6 +895,19 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
         [self setPinned:b[@"sid"] on:[b[@"on"] boolValue]
                    name:b[@"name"] cwd:b[@"cwd"]];
 
+    } else if ([cmd isEqualToString:@"killPid"]) {
+        // Abandoned helpers have no UI and nothing waiting on them, so there's
+        // nothing to save — but still ask politely before insisting.
+        pid_t pid = (pid_t)[b[@"pid"] intValue];
+        if (pid > 1) {
+            hlog(@"killing abandoned helper %@ (pid %d)", b[@"name"], pid);
+            kill(pid, SIGTERM);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
+                           dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                if (kill(pid, 0) == 0) kill(pid, SIGKILL);
+            });
+        }
+
     } else if ([cmd isEqualToString:@"quitApp"]) {
         // Ask the app to quit rather than killing it, so it can prompt about
         // unsaved work. The UI has already confirmed twice by this point.

@@ -207,6 +207,9 @@
   .m.gap{margin-top:3px;padding-top:6px;border-top:1px solid var(--line)}
   .m .lbl{font-size:10px;color:var(--fg3);letter-spacing:.05em;
           text-transform:uppercase}
+  /* what each meter actually means — hover for the explanation */
+  .m .info{font-size:8px;opacity:.45;margin-left:3px;vertical-align:1px}
+  .m:hover .info{opacity:.9}
   body.compact .m .lbl{font-size:9px}
   .m .bar{display:block;height:4px;border-radius:3px;background:var(--track);
           overflow:hidden}
@@ -226,17 +229,23 @@
         background:var(--hover);font-size:10.5px}
   #swap.on{display:block}
   #swap .note{color:var(--fg3);font-size:9.5px;padding-top:5px;line-height:1.4}
+  /* helpers an agent walked away from */
+  #orphans{display:none;margin:8px 10px 0;padding:8px 10px;border-radius:7px;
+           background:var(--waitBg);border:1px solid var(--waitLine);font-size:10.5px}
+  #orphans.on{display:block}
+  #orphans .oh{font-weight:700;color:var(--fg);padding-bottom:4px}
+  #orphans .note{color:var(--fg2);font-size:9.5px;padding-top:5px;line-height:1.4}
   #heat{display:none;margin:2px 10px 8px;padding:8px 10px;border-radius:7px;
         background:var(--hover);font-size:10.5px}
   #heat.on{display:block}
-  #heat .hr{display:flex;align-items:center;gap:8px;padding:3px 0}
-  #heat .hn{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  #heat .hr,#swap .hr,#orphans .hr{display:flex;align-items:center;gap:8px;padding:3px 0}
+  #heat .hn,#swap .hn,#orphans .hn{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
             color:var(--fg2)}
-  #heat .hc{flex:none;font-weight:700;color:var(--fg)}
-  #heat .ha{flex:none;padding:2px 8px;border-radius:5px;background:var(--track);
+  #heat .hc,#swap .hc,#orphans .hc{flex:none;font-weight:700;color:var(--fg)}
+  #heat .ha,#swap .ha,#orphans .ha{flex:none;padding:2px 8px;border-radius:5px;background:var(--track);
             font-size:9.5px;font-weight:600;color:var(--fg2)}
-  #heat .ha:hover{background:var(--fg3);color:var(--panel)}
-  #heat .ha.arm{background:var(--fail);color:#fff}
+  #heat .ha:hover,#swap .ha:hover,#orphans .ha:hover{background:var(--fg3);color:var(--panel)}
+  #heat .ha.arm,#swap .ha.arm,#orphans .ha.arm{background:var(--fail);color:#fff}
   #heat .note{color:var(--fg3);font-size:9.5px;padding-top:5px;line-height:1.4}
   /* serious/critical means macOS is actively throttling you */
   .m.alarm .lbl{color:var(--fail);font-weight:700}
@@ -378,26 +387,27 @@
 </div>
 
 <div id="meters">
-  <div class="m mach"><span class="lbl">CPU</span>
+  <div class="m mach"><span class="lbl">CPU<span class="info" title="CPU — how much of the processor is in use right now. Measured from the change in CPU time between ticks, not a since-boot average.">ⓘ</span></span>
     <span class="bar"><span class="fill" id="f-cpu"></span></span>
     <span class="val" id="v-cpu">—</span></div>
-  <div class="m mach"><span class="lbl">RAM</span>
+  <div class="m mach"><span class="lbl">RAM<span class="info" title="RAM — memory in use: app memory + wired + compressed, the same definition Activity Monitor uses. Counting everything that is not free would include the file cache and sit near 100% permanently.">ⓘ</span></span>
     <span class="bar"><span class="fill" id="f-mem"></span></span>
     <span class="val" id="v-mem">—</span></div>
-  <div class="m mach" id="m-swap"><span class="lbl">Swap</span>
+  <div class="m mach" id="m-swap"><span class="lbl">Swap<span class="info" title="Swap — memory pushed out to disk because it no longer fits. This is what makes a machine stutter while CPU and RAM both look fine: touching a paged-out page means waiting on disk. Past 75% this turns red and opens to show which apps are filling it.">ⓘ</span></span>
     <span class="bar"><span class="fill" id="f-swap"></span></span>
     <span class="val" id="v-swap">—</span></div>
-  <div class="m mach" id="m-temp"><span class="lbl">Temp</span>
+  <div class="m mach" id="m-temp"><span class="lbl">Temp<span class="info" title="Temp — macOS\u2019s own thermal verdict, not a chip temperature: Apple silicon publishes no die temperature without root. It tells you whether the machine is about to throttle. The battery figure beside it is a real reading but lags by minutes.">ⓘ</span></span>
     <span class="bar"><span class="fill" id="f-temp"></span></span>
     <span class="val" id="v-temp">—</span></div>
-  <div class="m gap"><span class="lbl">Session</span>
+  <div class="m gap"><span class="lbl">Session<span class="info" title="Session — your 5-hour Claude usage window, and the time until it resets.">ⓘ</span></span>
     <span class="bar"><span class="fill" id="f-ses"></span></span>
     <span class="val" id="v-ses">—</span></div>
-  <div class="m"><span class="lbl">Weekly</span>
+  <div class="m"><span class="lbl">Weekly<span class="info" title="Weekly — your 7-day Claude usage window. Hover the bar for the per-model limit, which is usually the one that runs out first.">ⓘ</span></span>
     <span class="bar"><span class="fill" id="f-wk"></span></span>
     <span class="val" id="v-wk">—</span></div>
 </div>
 
+<div id="orphans"></div>
 <div id="heat"></div>
 <div id="swap"></div>
 
@@ -730,6 +740,49 @@ function sync(container, items, key, paint){
   });
 }
 
+/* ---------- abandoned helper processes -------------------------------------
+   A search or headless browser whose agent has exited: parent gone, no
+   terminal, not managed by launchd. Nothing will ever read its output, but it
+   keeps running and keeps growing until you reboot. One of these was holding
+   9GB of compressed memory here. */
+let armedKill = null;
+function drawOrphans(list){
+  const el = $('orphans');
+  if (!list || !list.length) { el.className = ''; return; }
+  el.className = 'on';
+  el.innerHTML = `<div class="oh">${list.length} abandoned helper${
+    list.length > 1 ? 's' : ''}</div>`;
+  for (const o of list) {
+    const row = document.createElement('div');
+    row.className = 'hr';
+    row.innerHTML = `<span class="hn"></span>` +
+      `<span class="hc">${bytes(o.mem)}</span>`;
+    row.querySelector('.hn').textContent = `${o.name} · ${o.uptime} · ${o.cpu}%`;
+    const b = document.createElement('span');
+    b.className = 'ha';
+    b.textContent = 'Kill';
+    b.onclick = e => {
+      e.stopPropagation();
+      if (armedKill !== o.pid) {
+        armedKill = o.pid; b.textContent = 'Confirm'; b.classList.add('arm');
+        setTimeout(() => { if (armedKill === o.pid) {
+          armedKill = null; b.textContent = 'Kill'; b.classList.remove('arm'); }}, 4000);
+        return;
+      }
+      armedKill = null;
+      send({cmd:'killPid', pid:o.pid, name:o.name});
+    };
+    row.appendChild(b);
+    el.appendChild(row);
+  }
+  const n = document.createElement('div');
+  n.className = 'note';
+  n.textContent = 'The session that started these has exited, so nothing will '
+    + 'read their output. Killing them is safe.';
+  el.appendChild(n);
+  layout();
+}
+
 /* ---------- swap ----------------------------------------------------------
    The meter that actually explains stuttering on a machine whose CPU and RAM
    both look fine: once swap fills, every process that touches a paged-out page
@@ -960,6 +1013,7 @@ window.render = d => {
 
   drawHeat(d.heat);
   drawSwap(d.swap, d.swapDetail);
+  drawOrphans(d.orphans);
 
   maybeNotify(sessions);
 

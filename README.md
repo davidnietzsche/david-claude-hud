@@ -137,6 +137,16 @@ screen, so it burns CPU because something else is redrawing constantly — and
 the panel says so rather than pointing you at the wrong target. Your sessions
 point you at the session list instead, where you can see which ones they are.
 
+**Abandoned helpers** — a search or headless browser an agent started and then
+walked away from: parent gone, no terminal, not managed by launchd. Nothing
+will ever read its output, but it keeps running and keeps growing until you
+reboot. One of these was holding 9 GB of compressed memory on the machine this
+was built on; killing it freed 2 GB of swap instantly and touched nothing else.
+The HUD names them and offers to kill them.
+
+Every meter carries an **ⓘ** — hover it for what that number actually measures
+and why it's defined that way.
+
 **Background jobs** — every launchd agent and crontab entry: running ones green,
 failed ones red with their exit code, scheduled ones with time until next run.
 Switching this on for the first time usually turns up a couple of cron jobs that

@@ -458,6 +458,47 @@ def collect_swap_detail(snap, agent_pids, want):
     return out
 
 
+# Search helpers and headless browsers an agent spawned and then abandoned.
+# They keep running, keep growing, and nothing will ever read their output.
+ORPHAN_RE = re.compile(r"(ugrep|ripgrep|/rg$|chrome-headless-shell|"
+                       r"headless_shell|playwright)", re.I)
+
+
+def launchd_pids():
+    """Processes launchd owns. A daemon also has ppid 1 and must never be
+    mistaken for an abandoned helper."""
+    out = _run(["launchctl", "list"], timeout=8)
+    pids = set()
+    for line in out.splitlines()[1:]:
+        f = line.split("\t")
+        if f and f[0].isdigit():
+            pids.add(int(f[0]))
+    return pids
+
+
+def collect_orphans(snap):
+    """A helper is orphaned when its parent is gone (ppid 1), it owns no
+    terminal, and launchd isn't managing it. The session that asked for the
+    work has exited, so the result is going nowhere — but the process is still
+    burning CPU and memory, and will until you reboot."""
+    cands = [p for p in snap.values()
+             if p["ppid"] == 1
+             and p["tty"] in ("??", "-", "")
+             and ORPHAN_RE.search(p["comm"])]
+    if not cands:
+        return []
+    managed = launchd_pids()
+    out = []
+    for p in cands:
+        if p["pid"] in managed:
+            continue
+        out.append({"pid": p["pid"], "name": os.path.basename(p["comm"]),
+                    "cpu": round(p["cpu"], 1), "mem": p["rss"],
+                    "uptime": p["etime"]})
+    out.sort(key=lambda o: -o["mem"])
+    return out[:6]
+
+
 def read_attention():
     """Sessions an agent has asked for a human about, dropped by its hook.
     Keyed by session id."""
@@ -985,6 +1026,7 @@ def main():
         "usage": collect_usage(),
         "heat": heat,
         "swap": swap,
+        "orphans": collect_orphans(snap2),
         "swapDetail": collect_swap_detail(
             snap2, {s["pid"] for s in sessions},
             bool(swap and swap["pct"] >= SWAP_BUSY)),
