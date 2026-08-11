@@ -227,8 +227,9 @@ python3 hooks/install-hooks.py --remove
 | `✕` | quit |
 | `⌃⌥H` | show / hide from anywhere |
 
-**Park it out of the way** when you're presenting or need the screen: `⇥` turns
-the panel into a 36pt tab flush against the nearest screen edge — square on the
+**Park it out of the way** when you're presenting or need the screen: the dock
+button turns the panel into a 36pt tab flush against **whichever edge it's
+nearer to** — the arrow points at where it will go — square on the
 edge side, rounded on the inside — holding **the character and nothing else**,
 plus a small count when something is unread. Hover to slide out; anything that
 needs you pulls it out by itself. Menu bar → Reset Position un-parks it if you

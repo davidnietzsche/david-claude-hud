@@ -514,19 +514,31 @@ window.__dockedSide = side => {           // native confirms which edge it took
   body.classList.toggle('dock-left', side === 'left');
   body.classList.toggle('parked', !!side && !peeked);
   if (!side) { peeked = false; body.classList.remove('peeking', 'parked'); }
+  updateDockGlyph();
   if (lastData) render(lastData);   // badge text must change with the width
   layout();
 };
 
-// Work out the edge here rather than asking the native side and waiting to be
-// told: if that round trip ever failed, the panel would already have slid off
-// screen while the page still thought it was undocked — so no sliver would be
-// painted and there'd be nothing left to grab.
-function nearerEdge(){
-  const mid = (window.screenX || 0) + (window.outerWidth || 360) / 2;
-  const half = (window.screen && window.screen.availWidth || 1440) / 2;
-  return mid >= half ? 'right' : 'left';
+// Which edge the panel is nearer to. The page can't work this out — a
+// WKWebView reports screenX 0 and outerWidth 0 — so the native side pushes it
+// here whenever the panel moves. Keeping a local copy means parking still
+// marks itself docked immediately, without waiting on a round trip.
+let nearEdge = 'right';
+window.__nearEdge = side => {
+  nearEdge = side === 'left' ? 'left' : 'right';
+  updateDockGlyph();
+};
+function updateDockGlyph(){
+  const b = $('b-dock');
+  if (!b) return;
+  // Point at where it will actually go, and at the way back out once parked.
+  b.textContent = dockSide
+    ? (dockSide === 'left' ? '⇥' : '⇤')
+    : (nearEdge === 'left' ? '⇤' : '⇥');
+  b.title = dockSide ? 'Bring it back'
+                     : `Park at the ${nearEdge} edge`;
 }
+function nearerEdge(){ return nearEdge; }
 $('b-dock').onclick = () => {
   if (dockSide) { window.__dockedSide(''); send({cmd:'dock', side:'', out:true}); }
   else {
@@ -1011,6 +1023,7 @@ $('list-s').addEventListener('pointerleave', () => {
   if (lastData) render(lastData);
 });
 
+updateDockGlyph();
 if (dockSide) { const d = dockSide; dockSide = ''; window.__dockedSide(d);
                 send({cmd:'dock', side:d, out:false}); }
 

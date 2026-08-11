@@ -78,6 +78,7 @@ static void hlog(NSString *fmt, ...) {
 // previous CPU tick counters, for an instantaneous (not since-boot) reading
 @property (assign) uint64_t pUser, pSys, pIdle, pNice;
 @property (assign) BOOL notifyAllowed;
+@property (copy)   NSString *lastEdge;
 @property (copy)   NSString *charState;   // @"work", @"wait" or @"rest"
 @property (assign) NSInteger charFrame;
 @property (assign) NSInteger unread;
@@ -738,6 +739,24 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
 - (void)saveFrame {
     [[NSUserDefaults standardUserDefaults]
         setObject:NSStringFromRect(self.panel.frame) forKey:kFrameKey];
+    [self pushNearEdge];
+}
+
+// A WKWebView reports screenX = 0 and outerWidth = 0, so the page cannot work
+// out where on screen it sits — its own guess at the nearer edge was always
+// "left". Only the native side knows, so it tells the page, and re-tells it
+// every time the panel moves.
+- (void)pushNearEdge {
+    if (!self.ready) return;
+    NSString *side = [self nearestEdge];
+    if (![side isEqualToString:self.lastEdge]) {
+        self.lastEdge = side;
+        hlog(@"near edge -> %@ (panel midX %.0f)", side,
+             NSMidX(self.panel.frame));
+    }
+    [self.web evaluateJavaScript:
+        [NSString stringWithFormat:@"window.__nearEdge && window.__nearEdge('%@')", side]
+               completionHandler:nil];
 }
 
 // Bring the Terminal window that owns a given tty to the front, and select the
@@ -850,6 +869,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
 
     if ([cmd isEqualToString:@"ready"]) {
         self.ready = YES;
+        [self pushNearEdge];
         [self tick];
 
     } else if ([cmd isEqualToString:@"drag"]) {
@@ -863,6 +883,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
         }
         NSEvent *e = NSApp.currentEvent;
         if (e) [self.panel performWindowDragWithEvent:e];
+        [self pushNearEdge];
 
     } else if ([cmd isEqualToString:@"dragEnd"]) {
         [self saveFrame];
