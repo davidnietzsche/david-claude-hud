@@ -715,6 +715,7 @@ function beginRename(row, s){
   const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
 
   const finish = commit => {
+    if (renaming !== s.sid) return;      // already finished
     nm.removeAttribute('contenteditable');
     const name = nm.textContent.trim().slice(0, 60);
     renaming = null;
@@ -1035,6 +1036,12 @@ function layout(){
 /* ---------- main render ---------- */
 window.render = d => {
   lastData = d;
+  // Belt and braces: if the edited row went away (session ended, list rebuilt),
+  // release the flag rather than blocking every later interaction.
+  if (renaming && !$('list-s').querySelector('[contenteditable]')) {
+    renaming = null;
+    frozen = null;
+  }
   const c = d.counts;
   // SVG elements need setAttribute — .className is a read-only SVGAnimatedString
   // (character + tally are set below, once demotions are known)
@@ -1139,6 +1146,11 @@ window.render = d => {
     : kinds.length < 2 ? `${c.total} · ${bytes(c.mem)}`
     : kinds.map(k => `${mix[k]} ${k}`).join(' · ') + ` · ${bytes(c.mem)}`;
   sync($('list-s'), sessions, s => 's' + s.sid, (row, s) => {
+    // Leave an in-progress edit alone. Repainting the row replaced the field
+    // mid-keystroke, which threw the text away and — because the element was
+    // destroyed rather than blurred — left `renaming` set forever, killing
+    // double-click everywhere.
+    if (renaming === s.sid) return;
     const un = isUnread(s);
     row.className = 'row click ' + s.status + (un ? ' unread' : '') +
                     (s.mem > 5e8 ? ' heavy' : '');
