@@ -28,6 +28,7 @@ LA_DIR = os.path.join(HOME, "Library", "LaunchAgents")
 STATE_F = os.path.join(HUD_DIR, "state.json")
 ATTN_DIR = os.path.join(HUD_DIR, "attention")
 USAGE_F = os.path.join(HUD_DIR, "usage.json")
+SWAP_F = os.path.join(HUD_DIR, "swapdetail.json")
 
 PROVIDERS_F = os.path.join(HUD_DIR, "providers.json")
 
@@ -39,6 +40,8 @@ USAGE_TTL = 300     # usage moves slowly; polling harder just earns a 429
 USAGE_ERR_TTL = 600 # after an error (esp. rate limiting), back well off
 DONE_WINDOW = 600   # keep "just finished" highlighted for 10 min
 ATTN_MAX_AGE = 3600 # a waiting prompt older than this is stale
+SWAP_BUSY = 75      # swap this full is where the stalls start
+SWAP_TTL = 30       # `top` costs a second, so cache the breakdown
 
 # Job labels we care about: anything that isn't vendor noise.
 LABEL_SKIP = ("com.apple.", "com.google.", "com.DigiDNA", "com.microsoft.",
@@ -374,6 +377,85 @@ def collect_heat(snap, kids, agent_pids):
         out.append(g)
     out.sort(key=lambda g: -g["cpu"])
     return out[:6]
+
+
+def read_swap():
+    """Swap usage. This is the number that explains stuttering on a machine
+    whose CPU and RAM percentages both look fine: once memory demand exceeds
+    what fits, the machine spends its time moving pages to and from disk, and
+    every process that touches a swapped-out page stalls waiting for it."""
+    out = _run(["sysctl", "-n", "vm.swapusage"], timeout=5)
+    m = re.search(r"total = ([\d.]+)M.*used = ([\d.]+)M", out)
+    if not m:
+        return None
+    total, used = float(m.group(1)), float(m.group(2))
+    return {"usedMB": round(used), "totalMB": round(total),
+            "pct": round(used / total * 100, 1) if total else 0}
+
+
+def refresh_swap_detail():
+    """Which processes are actually sitting in compressed memory / swap.
+
+    There's no per-process swap figure on macOS, but `top` reports compressed
+    memory per process, which is the same story: those are the pages that have
+    to be decompressed or faulted back in before the process can run."""
+    out = _run(["top", "-l", "1", "-n", "40", "-o", "cmprs",
+                "-stats", "pid,command,cmprs"], timeout=25)
+    rows = []
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) < 3 or not f[0].isdigit():
+            continue
+        size = f[-1]
+        mult = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}.get(size[-1:], 1)
+        try:
+            by = float(size[:-1] if mult > 1 else size) * mult
+        except ValueError:
+            continue
+        rows.append({"pid": int(f[0]), "cmprs": by})
+    _write_json(SWAP_F, {"rows": rows, "at": int(time.time() * 1000)})
+    _clear_lock("swap")
+
+
+def collect_swap_detail(snap, agent_pids, want):
+    """Group the compressed-memory hogs the way the heat list does, so one app
+    is one row rather than a page of helper processes."""
+    if not want:
+        return []
+    if not _fresh(SWAP_F, SWAP_TTL):
+        _spawn_refresh("swap")
+    d = _read_json(SWAP_F) or {}
+    groups = {}
+    for r in d.get("rows", []):
+        pid, by = r["pid"], r["cmprs"]
+        if by < 20 * 1024 ** 2:
+            continue
+        p = snap.get(pid)
+        if not p:
+            continue
+        name, kind, owner = None, "proc", pid
+        root, hops = pid, 0
+        while root and hops < 8:
+            if root in agent_pids:
+                name, kind, owner = "Your agent sessions", "agent", root
+                break
+            q = snap.get(root)
+            if not q:
+                break
+            root, hops = q["ppid"], hops + 1
+        if not name:
+            a = app_name(p["comm"])
+            if a:
+                name, kind, owner = a, "app", pid
+            else:
+                name = os.path.basename(p["comm"]).lstrip("-")
+                kind = "system" if name.lower() in HEAT_PROTECTED else "proc"
+        g = groups.setdefault(name, {"name": name, "bytes": 0, "pid": owner,
+                                     "kind": kind, "count": 0})
+        g["bytes"] += by
+        g["count"] += 1
+    out = sorted(groups.values(), key=lambda g: -g["bytes"])[:6]
+    return out
 
 
 def read_attention():
@@ -871,6 +953,8 @@ def main():
         try:
             if what == "usage":
                 refresh_usage()
+            elif what == "swap":
+                refresh_swap_detail()
         finally:
             _clear_lock(what)
         return
@@ -882,6 +966,7 @@ def main():
     sessions = collect_sessions(now_ms)
     snap2, kids2 = ps_snapshot()
     heat = collect_heat(snap2, kids2, {s["pid"] for s in sessions})
+    swap = read_swap()
     jobs = collect_launchd(now) + collect_cron(now)
     jobs.sort(key=lambda j: (not j["running"], not j["failed"],
                              j["nextTs"] or 9e18, j["name"]))
@@ -899,6 +984,10 @@ def main():
         },
         "usage": collect_usage(),
         "heat": heat,
+        "swap": swap,
+        "swapDetail": collect_swap_detail(
+            snap2, {s["pid"] for s in sessions},
+            bool(swap and swap["pct"] >= SWAP_BUSY)),
         "jobs": jobs,
         "jobCounts": {
             "running": sum(1 for j in jobs if j["running"]),

@@ -105,6 +105,14 @@ with time until each resets. Hover the weekly bar for the per-model scoped
 limit, usually the one that bites first. No more finding out you're out of
 runway halfway through something.
 
+**Swap** — the meter that explains stuttering on a machine whose CPU and RAM
+both look fine. Once memory demand exceeds what fits, every process that
+touches a paged-out page waits on disk: a freeze that recovers a second later.
+Past 75% the row turns red and becomes clickable, listing which apps are
+actually sitting in compressed memory — macOS publishes no per-process swap
+figure, but compressed memory per process is the same story, and those are the
+pages that have to be faulted back in before an app can run.
+
 **Machine load** — CPU, RAM and thermal state. RAM uses Activity Monitor's
 definition rather than counting the file cache, which would read ~99% forever
 and tell you nothing.

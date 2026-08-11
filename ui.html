@@ -219,6 +219,13 @@
   /* what's making it hot, and what you can do about it */
   #m-temp{cursor:default}
   #m-temp .lbl::after{content:' ▸';font-size:7px;opacity:.5}
+  #m-swap{cursor:default}
+  #m-swap.busy .lbl{color:var(--fail);font-weight:700}
+  #m-swap.busy .lbl::after{content:' ▸';font-size:7px;opacity:.6}
+  #swap{display:none;margin:2px 10px 8px;padding:8px 10px;border-radius:7px;
+        background:var(--hover);font-size:10.5px}
+  #swap.on{display:block}
+  #swap .note{color:var(--fg3);font-size:9.5px;padding-top:5px;line-height:1.4}
   #heat{display:none;margin:2px 10px 8px;padding:8px 10px;border-radius:7px;
         background:var(--hover);font-size:10.5px}
   #heat.on{display:block}
@@ -377,6 +384,9 @@
   <div class="m mach"><span class="lbl">RAM</span>
     <span class="bar"><span class="fill" id="f-mem"></span></span>
     <span class="val" id="v-mem">—</span></div>
+  <div class="m mach" id="m-swap"><span class="lbl">Swap</span>
+    <span class="bar"><span class="fill" id="f-swap"></span></span>
+    <span class="val" id="v-swap">—</span></div>
   <div class="m mach" id="m-temp"><span class="lbl">Temp</span>
     <span class="bar"><span class="fill" id="f-temp"></span></span>
     <span class="val" id="v-temp">—</span></div>
@@ -389,6 +399,7 @@
 </div>
 
 <div id="heat"></div>
+<div id="swap"></div>
 
 <div class="sec" id="sec-s">
   <div class="hd"><span class="car">▶</span><span class="nm">Sessions</span>
@@ -667,6 +678,34 @@ window.setMachine = (cpu, mem, therm, battC) => {
       ((therm | 0) >= 2 ? ` · ${t.label}` : '');
 };
 
+/* ---------- animate reordering --------------------------------------------
+   Demoting or reading a row changes its rank, and the list used to jump to the
+   new order in one frame. Measure every row's position, apply the change, then
+   animate each row from where it was to where it landed. */
+function withFlip(mutate){
+  const list = $('list-s');
+  const before = new Map();
+  for (const r of list.children) before.set(r.dataset.k, r.getBoundingClientRect().top);
+
+  mutate();
+
+  for (const r of list.children) {
+    const was = before.get(r.dataset.k);
+    if (was == null) continue;
+    const shift = was - r.getBoundingClientRect().top;
+    if (!shift) continue;
+    r.style.transition = 'none';
+    r.style.transform = `translateY(${shift}px)`;
+  }
+  requestAnimationFrame(() => {
+    for (const r of list.children) {
+      if (!r.style.transform) continue;
+      r.style.transition = 'transform .24s cubic-bezier(.2,.7,.3,1)';
+      r.style.transform = '';
+    }
+  });
+}
+
 /* ---------- keyed row reconciler: no flicker, keeps hover ---------- */
 function sync(container, items, key, paint){
   const seen = new Set();
@@ -689,6 +728,59 @@ function sync(container, items, key, paint){
     if (row && container.children[i] !== row)
       container.insertBefore(row, container.children[i]);
   });
+}
+
+/* ---------- swap ----------------------------------------------------------
+   The meter that actually explains stuttering on a machine whose CPU and RAM
+   both look fine: once swap fills, every process that touches a paged-out page
+   waits on disk, which reads as a freeze that recovers a moment later. */
+let swapOpen = false;
+$('m-swap').onclick = () => { swapOpen = !swapOpen; if (lastData) render(lastData); };
+
+function drawSwap(sw, detail){
+  const busy = sw && sw.pct >= 75;
+  $('m-swap').classList.toggle('busy', !!busy);
+  if (!sw) { meter($('f-swap'), $('v-swap'), null); $('swap').className = ''; return; }
+  meter($('f-swap'), $('v-swap'), sw.pct,
+        `<em>${Math.round(sw.pct)}</em>% · ${(sw.usedMB/1024).toFixed(1)}G`,
+        p => p >= 90 ? pal().fail : p >= 75 ? pal().busy : pal().done);
+  $('v-swap').title = `${sw.usedMB} MB of ${sw.totalMB} MB swap in use`;
+
+  const el = $('swap');
+  if (!busy || !swapOpen || !detail || !detail.length) { el.className = ''; return; }
+  el.className = 'on';
+  el.innerHTML = '';
+  for (const r of detail) {
+    const row = document.createElement('div');
+    row.className = 'hr';
+    row.innerHTML = `<span class="hn"></span><span class="hc">${bytes(r.bytes)}</span>`;
+    row.querySelector('.hn').textContent =
+      r.name + (r.count > 1 ? ` (${r.count})` : '');
+    if (r.kind === 'app') {
+      const b = document.createElement('span');
+      b.className = 'ha';
+      b.textContent = 'Quit';
+      b.onclick = e => {
+        e.stopPropagation();
+        if (armedQuit !== r.pid) {
+          armedQuit = r.pid; b.textContent = 'Really quit?'; b.classList.add('arm');
+          setTimeout(() => { if (armedQuit === r.pid) {
+            armedQuit = null; b.textContent = 'Quit'; b.classList.remove('arm'); }}, 4000);
+          return;
+        }
+        armedQuit = null;
+        send({cmd:'quitApp', pid:r.pid, name:r.name});
+      };
+      row.appendChild(b);
+    }
+    el.appendChild(row);
+  }
+  const n = document.createElement('div');
+  n.className = 'note';
+  n.textContent = 'Compressed memory per app — these are the pages that have to '
+    + 'be faulted back in before the app can run, which is what the stutter is.';
+  el.appendChild(n);
+  layout();
 }
 
 /* ---------- what's making it hot ------------------------------------------
@@ -867,6 +959,7 @@ window.render = d => {
     : unreadCount(sessions) ? 'var(--done)' : 'var(--idle)');
 
   drawHeat(d.heat);
+  drawSwap(d.swap, d.swapDetail);
 
   maybeNotify(sessions);
 
@@ -892,7 +985,7 @@ window.render = d => {
     ban.onclick = () => {
       markRead(fresh);
       send({cmd:"focus", tty:fresh.devtty});
-      render(d);
+      withFlip(() => render(d));
     };
   } else {
     ban.classList.remove('on');
@@ -968,12 +1061,12 @@ window.render = d => {
       if (on) pinned[s.sid] = true; else delete pinned[s.sid];
       localStorage.setItem('hudPinned', JSON.stringify(pinned));
       send({cmd:'pin', sid:s.sid, on, name:s.name, cwd:s.cwd});
-      render(d);
+      withFlip(() => render(d));
     };
     row.querySelector('.push').onclick = e => {
       e.stopPropagation();
       pushDown(s);
-      render(d);
+      withFlip(() => render(d));
     };
     // Double click, not single: a single click used to jump *and* re-rank the
     // row out from under the pointer.
