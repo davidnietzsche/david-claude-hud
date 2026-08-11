@@ -41,6 +41,10 @@ actually going and looking. That's the entire point.
 **Double-click the row, land in the right terminal.** No hunting. The window
 comes forward with the correct tab already selected.
 
+**Rename a session** with the `✎` on its row. Agents derive their own names and
+often pick something unhelpful; whatever you type here is also set as the
+terminal's tab title, so the HUD and your window switcher agree.
+
 **Pin the sessions you care about** with the `⚑` on a row, and they come back
 after a restart: one terminal each, `cd`'d to the right folder and resuming that
 exact conversation with its history — Claude Code appends to the same
@@ -106,12 +110,13 @@ limit, usually the one that bites first. No more finding out you're out of
 runway halfway through something.
 
 **Swap** — the meter that explains stuttering on a machine whose CPU and RAM
-both look fine. Once memory demand exceeds what fits, every process that
-touches a paged-out page waits on disk: a freeze that recovers a second later.
-Past 75% the row turns red and becomes clickable, listing which apps are
-actually sitting in compressed memory — macOS publishes no per-process swap
-figure, but compressed memory per process is the same story, and those are the
-pages that have to be faulted back in before an app can run.
+both look fine. It shows **paging traffic in MB/s**, not how full swap is:
+macOS resizes the swap file to fit its contents, so used-versus-total sits near
+100% even on a completely idle machine — it read 89% here while nothing at all
+was being paged. Traffic is the part that stalls you, because a process that
+touches a paged-out page waits on disk. Click it to see which apps are sitting
+in compressed memory; macOS publishes no per-process swap figure, but those are
+the same pages.
 
 **Machine load** — CPU, RAM and thermal state. RAM uses Activity Monitor's
 definition rather than counting the file cache, which would read ~99% forever

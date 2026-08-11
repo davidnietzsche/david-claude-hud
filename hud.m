@@ -461,6 +461,38 @@ static void fillCell(CGFloat x, CGFloat y, CGFloat w, CGFloat h,
     });
 }
 
+#pragma mark Renaming
+
+// Store the name for the HUD, and push it to the terminal's tab title so the
+// window you switch to with Cmd-` says the same thing the HUD does.
+- (void)renameSession:(NSString *)sid to:(NSString *)name tty:(NSString *)tty {
+    if (!sid.length || !name.length) return;
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:
+                      @".claude-hud/names.json"];
+    NSData *d = [NSData dataWithContentsOfFile:path];
+    id j = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+    NSMutableDictionary *names = [j isKindOfClass:NSDictionary.class]
+        ? [j mutableCopy] : [NSMutableDictionary new];
+    names[sid] = name;
+    [[NSJSONSerialization dataWithJSONObject:names options:0 error:nil]
+        writeToFile:path atomically:YES];
+    hlog(@"rename %@ -> %@", [sid substringToIndex:MIN(8u, sid.length)], name);
+
+    if (!tty.length) return;
+    NSString *safe = [name stringByReplacingOccurrencesOfString:@"\"" withString:@"'"];
+    NSString *src = [NSString stringWithFormat:
+        @"tell application \"Terminal\"\n"
+         "  repeat with w in windows\n"
+         "    repeat with t in tabs of w\n"
+         "      try\n"
+         "        if tty of t is \"%@\" then set custom title of t to \"%@\"\n"
+         "      end try\n"
+         "    end repeat\n"
+         "  end repeat\n"
+         "end tell", tty, safe];
+    [self runTool:@"/usr/bin/osascript" args:@[@"-e", src]];
+}
+
 #pragma mark Pinned sessions
 
 // Sessions you've pinned are reopened after a reboot: a terminal per session,
@@ -890,6 +922,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
 
     } else if ([cmd isEqualToString:@"focus"]) {
         [self focusTTY:b[@"tty"] winId:b[@"winId"]];
+
+    } else if ([cmd isEqualToString:@"rename"]) {
+        [self renameSession:b[@"sid"] to:b[@"name"] tty:b[@"tty"]];
 
     } else if ([cmd isEqualToString:@"pin"]) {
         [self setPinned:b[@"sid"] on:[b[@"on"] boolValue]

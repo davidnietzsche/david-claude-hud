@@ -224,7 +224,7 @@
   #m-temp .lbl::after{content:' ▸';font-size:7px;opacity:.5}
   #m-swap{cursor:default}
   #m-swap.busy .lbl{color:var(--fail);font-weight:700}
-  #m-swap.busy .lbl::after{content:' ▸';font-size:7px;opacity:.6}
+  #m-swap .lbl::after{content:' ▸';font-size:7px;opacity:.45}
   #swap{display:none;margin:2px 10px 8px;padding:8px 10px;border-radius:7px;
         background:var(--hover);font-size:10.5px}
   #swap.on{display:block}
@@ -308,6 +308,14 @@
              text-transform:uppercase;opacity:.9}
   body.single-provider .row .prov{display:none}
   /* push a "needs you" down when it isn't actually urgent */
+  /* rename: name it what you call it, and retitle the terminal to match */
+  .row .rn{display:none;flex:none;font-size:9.5px;line-height:1;color:var(--fg3);
+           padding:2px 3px;border-radius:4px}
+  .row:hover .rn{display:inline-block}
+  .row .rn:hover{color:var(--fg);background:var(--hover)}
+  .row .nm[contenteditable]{outline:none;background:var(--panel);
+    box-shadow:0 0 0 1px var(--busy);border-radius:3px;padding:1px 4px;
+    cursor:text;-webkit-user-select:text;user-select:text}
   /* pin: reopen this session after a restart */
   .row .pin{display:none;flex:none;font-size:10px;line-height:1;color:var(--fg3);
             padding:2px 3px;border-radius:4px}
@@ -393,7 +401,7 @@
   <div class="m mach"><span class="lbl">RAM<span class="info" title="RAM — memory in use: app memory + wired + compressed, the same definition Activity Monitor uses. Counting everything that is not free would include the file cache and sit near 100% permanently.">ⓘ</span></span>
     <span class="bar"><span class="fill" id="f-mem"></span></span>
     <span class="val" id="v-mem">—</span></div>
-  <div class="m mach" id="m-swap"><span class="lbl">Swap<span class="info" title="Swap — memory pushed out to disk because it no longer fits. This is what makes a machine stutter while CPU and RAM both look fine: touching a paged-out page means waiting on disk. Past 75% this turns red and opens to show which apps are filling it.">ⓘ</span></span>
+  <div class="m mach" id="m-swap"><span class="lbl">Swap<span class="info" title="Swap — paging traffic right now, in MB/s. This is what makes a machine stutter while CPU and RAM both look fine: touching a paged-out page means waiting on disk. It shows traffic rather than how full swap is, because macOS resizes the swap file to fit — that figure reads near 100% even on a completely idle machine. Click to see which apps are sitting in compressed memory.">ⓘ</span></span>
     <span class="bar"><span class="fill" id="f-swap"></span></span>
     <span class="val" id="v-swap">—</span></div>
   <div class="m mach" id="m-temp"><span class="lbl">Temp<span class="info" title="Temp — macOS\u2019s own thermal verdict, not a chip temperature: Apple silicon publishes no die temperature without root. It tells you whether the machine is about to throttle. The battery figure beside it is a real reading but lags by minutes.">ⓘ</span></span>
@@ -688,6 +696,44 @@ window.setMachine = (cpu, mem, therm, battC) => {
       ((therm | 0) >= 2 ? ` · ${t.label}` : '');
 };
 
+/* ---------- rename a session ----------------------------------------------
+   The name comes from the agent, which often derives something unhelpful. Edit
+   it in place here and the terminal's tab title is set to match, so the two
+   don't drift apart. Renaming freezes the list so the row can't slide away
+   mid-edit. */
+let renaming = null;
+function beginRename(row, s){
+  const nm = row.querySelector('.nm');
+  if (!nm || renaming) return;
+  renaming = s.sid;
+  freezeOrder();
+  const original = s.name;
+  nm.setAttribute('contenteditable', 'plaintext-only');
+  nm.focus();
+  const r = document.createRange();
+  r.selectNodeContents(nm);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+
+  const finish = commit => {
+    nm.removeAttribute('contenteditable');
+    const name = nm.textContent.trim().slice(0, 60);
+    renaming = null;
+    frozen = null;
+    if (commit && name && name !== original) {
+      send({cmd:'rename', sid:s.sid, tty:s.devtty, name});
+    } else {
+      nm.textContent = original;
+    }
+    if (lastData) render(lastData);
+  };
+  nm.onkeydown = e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  };
+  nm.onblur = () => finish(true);
+}
+
 /* ---------- animate reordering --------------------------------------------
    Demoting or reading a row changes its rank, and the list used to jump to the
    new order in one frame. Measure every row's position, apply the change, then
@@ -790,17 +836,29 @@ function drawOrphans(list){
 let swapOpen = false;
 $('m-swap').onclick = () => { swapOpen = !swapOpen; if (lastData) render(lastData); };
 
+// Paging *traffic*, not how full the swap file is. macOS resizes that file to
+// fit its contents, so used/total sits near 100% whenever it's correctly sized
+// — it read 89% on a completely idle machine. Traffic is what stalls you.
+const SWAP_FULLSCALE = 40;   // MB/s treated as "as bad as it gets"
 function drawSwap(sw, detail){
-  const busy = sw && sw.pct >= 75;
+  const rate = sw && sw.rate != null ? sw.rate : null;
+  const busy = rate != null && rate >= 8;
   $('m-swap').classList.toggle('busy', !!busy);
   if (!sw) { meter($('f-swap'), $('v-swap'), null); $('swap').className = ''; return; }
-  meter($('f-swap'), $('v-swap'), sw.pct,
-        `<em>${Math.round(sw.pct)}</em>% · ${(sw.usedMB/1024).toFixed(1)}G`,
-        p => p >= 90 ? pal().fail : p >= 75 ? pal().busy : pal().done);
-  $('v-swap').title = `${sw.usedMB} MB of ${sw.totalMB} MB swap in use`;
+  const shown = rate == null ? 0 : Math.min(100, rate / SWAP_FULLSCALE * 100);
+  meter($('f-swap'), $('v-swap'), shown,
+        rate == null ? '…'
+          : rate < 0.5 ? `<em>idle</em> · ${(sw.usedMB/1024).toFixed(1)}G`
+          : `<em>${rate.toFixed(rate < 10 ? 1 : 0)}</em> MB/s`,
+        p => p >= 60 ? pal().fail : p >= 20 ? pal().busy : pal().done);
+  $('v-swap').title =
+    `Paging traffic: ${rate == null ? 'sampling…' : rate + ' MB/s'}\n` +
+    `${sw.usedMB} MB of ${sw.totalMB} MB swap file in use\n\n` +
+    `How full swap is barely matters — macOS resizes the file to fit, so that ` +
+    `figure sits near 100% even when idle. Traffic is what makes things stutter.`;
 
   const el = $('swap');
-  if (!busy || !swapOpen || !detail || !detail.length) { el.className = ''; return; }
+  if (!swapOpen || !detail || !detail.length) { el.className = ''; return; }
   el.className = 'on';
   el.innerHTML = '';
   for (const r of detail) {
@@ -1094,6 +1152,7 @@ window.render = d => {
         : dur(s.idleFor);
     row.innerHTML = `<span class="st"></span><span class="nm"></span>` +
       `<span class="new">NEW</span>` +
+      `<span class="rn" title="Rename — also retitles the terminal">✎</span>` +
       `<span class="pin" title="Reopen this session after a restart">⚑</span>` +
       `<span class="push" title="Not urgent — push this down">↓</span>` +
       `<span class="prov"></span>` +
@@ -1109,6 +1168,7 @@ window.render = d => {
       `RAM ${bytes(s.mem)} (process tree) · CPU ${s.treeCpu}%\n` +
       `up ${s.uptime}\n${s.cwd}`;
     row.classList.toggle('pinned', !!pinned[s.sid]);
+    row.querySelector('.rn').onclick = e => { e.stopPropagation(); beginRename(row, s); };
     row.querySelector('.pin').onclick = e => {
       e.stopPropagation();
       const on = !pinned[s.sid];
@@ -1126,6 +1186,7 @@ window.render = d => {
     // row out from under the pointer.
     row.onclick = null;
     row.ondblclick = () => {
+      if (renaming) return;
       markRead(s);
       send({cmd:"focus", tty:s.devtty});
       render(d);

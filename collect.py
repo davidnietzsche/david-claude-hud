@@ -29,6 +29,8 @@ STATE_F = os.path.join(HUD_DIR, "state.json")
 ATTN_DIR = os.path.join(HUD_DIR, "attention")
 USAGE_F = os.path.join(HUD_DIR, "usage.json")
 SWAP_F = os.path.join(HUD_DIR, "swapdetail.json")
+SWAPRATE_F = os.path.join(HUD_DIR, "swaprate.json")
+NAMES_F = os.path.join(HUD_DIR, "names.json")
 
 PROVIDERS_F = os.path.join(HUD_DIR, "providers.json")
 
@@ -40,7 +42,7 @@ USAGE_TTL = 300     # usage moves slowly; polling harder just earns a 429
 USAGE_ERR_TTL = 600 # after an error (esp. rate limiting), back well off
 DONE_WINDOW = 600   # keep "just finished" highlighted for 10 min
 ATTN_MAX_AGE = 3600 # a waiting prompt older than this is stale
-SWAP_BUSY = 75      # swap this full is where the stalls start
+SWAP_BUSY = 8.0     # MB/s of paging above which stalls are audible
 SWAP_TTL = 30       # `top` costs a second, so cache the breakdown
 
 # Job labels we care about: anything that isn't vendor noise.
@@ -379,18 +381,43 @@ def collect_heat(snap, kids, agent_pids):
     return out[:6]
 
 
-def read_swap():
-    """Swap usage. This is the number that explains stuttering on a machine
-    whose CPU and RAM percentages both look fine: once memory demand exceeds
-    what fits, the machine spends its time moving pages to and from disk, and
-    every process that touches a swapped-out page stalls waiting for it."""
+def read_swap(now_ms):
+    """Swap, measured by *rate* rather than fill.
+
+    How full swap is turns out to be nearly useless: macOS resizes the swap
+    file to fit what's in it, so used/total sits near 100% whenever the file is
+    correctly sized. Watching that number cry wolf at 89% while the machine was
+    completely idle is what prompted this.
+
+    What actually causes a stutter is paging traffic — a process touching a
+    page that isn't resident waits on disk. So the signal is pages moved per
+    second, with the fill figure kept only as context."""
     out = _run(["sysctl", "-n", "vm.swapusage"], timeout=5)
     m = re.search(r"total = ([\d.]+)M.*used = ([\d.]+)M", out)
-    if not m:
-        return None
-    total, used = float(m.group(1)), float(m.group(2))
+    used = float(m.group(2)) if m else 0
+    total = float(m.group(1)) if m else 0
+
+    vm = _run(["vm_stat"], timeout=5)
+    def stat(label):
+        g = re.search(label + r":\s+(\d+)", vm)
+        return int(g.group(1)) if g else 0
+    ins, outs = stat("Swapins"), stat("Swapouts")
+    page = 16384
+    try:
+        page = int(_run(["sysctl", "-n", "hw.pagesize"], timeout=5).strip())
+    except ValueError:
+        pass
+
+    p = _read_json(SWAPRATE_F, {}) or {}
+    dt = (now_ms - (p.get("at") or 0)) / 1000.0
+    rate = None
+    if p and 0.2 < dt < 60:
+        moved = max(0, ins - p.get("ins", 0)) + max(0, outs - p.get("outs", 0))
+        rate = moved * page / dt / 1e6          # MB/s of paging traffic
+    _write_json(SWAPRATE_F, {"ins": ins, "outs": outs, "at": now_ms})
     return {"usedMB": round(used), "totalMB": round(total),
-            "pct": round(used / total * 100, 1) if total else 0}
+            "pct": round(used / total * 100, 1) if total else 0,
+            "rate": round(rate, 1) if rate is not None else None}
 
 
 def refresh_swap_detail():
@@ -536,6 +563,8 @@ def claude_sessions():
 
 def collect_sessions(now_ms):
     snap, kids = ps_snapshot()
+    # Names you set in the HUD win over whatever the agent derived.
+    custom = _read_json(NAMES_F, {}) or {}
     provs = load_providers()
     attn = read_attention()
 
@@ -642,8 +671,9 @@ def collect_sessions(now_ms):
             bucket = "idle"
 
         cwd = (ex or {}).get("cwd") or dirs.get(pid, "")
-        name = (ex or {}).get("name") or (os.path.basename(cwd.rstrip("/"))
-                                          if cwd else "") or f"pid {pid}"
+        name = (custom.get(sid) or (ex or {}).get("name")
+                or (os.path.basename(cwd.rstrip("/")) if cwd else "")
+                or f"pid {pid}")
 
         tty_short = proc["tty"]
         live_sids.add(sid)
@@ -659,6 +689,7 @@ def collect_sessions(now_ms):
             "pid": pid,
             "sid": sid,
             "name": name,
+            "renamed": sid in custom,
             "cwd": cwd,
             "status": bucket,
             "raw_status": "busy" if busy else "idle",
@@ -1007,7 +1038,7 @@ def main():
     sessions = collect_sessions(now_ms)
     snap2, kids2 = ps_snapshot()
     heat = collect_heat(snap2, kids2, {s["pid"] for s in sessions})
-    swap = read_swap()
+    swap = read_swap(now_ms)
     jobs = collect_launchd(now) + collect_cron(now)
     jobs.sort(key=lambda j: (not j["running"], not j["failed"],
                              j["nextTs"] or 9e18, j["name"]))
@@ -1029,7 +1060,7 @@ def main():
         "orphans": collect_orphans(snap2),
         "swapDetail": collect_swap_detail(
             snap2, {s["pid"] for s in sessions},
-            bool(swap and swap["pct"] >= SWAP_BUSY)),
+            bool(swap and (swap.get("rate") or 0) >= SWAP_BUSY)),
         "jobs": jobs,
         "jobCounts": {
             "running": sum(1 for j in jobs if j["running"]),
