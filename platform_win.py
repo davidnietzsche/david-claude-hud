@@ -112,8 +112,44 @@ def fmt_uptime(secs):
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
+CPU_STATE = os.path.join(os.path.expanduser("~"), ".claude-hud", "wincpu.json")
+
+
 def snapshot():
-    return parse_snapshot(ps1(PS_SNAPSHOT))
+    """Snapshot with an instantaneous CPU figure per process.
+
+    Windows only reports cumulative CPU seconds. macOS's ps hands out a decaying
+    average directly, and the collector's heat attribution relies on it — left
+    at zero, every process looks idle and the "what's making this hot" list
+    comes back empty. So the delta is computed here, against the previous tick."""
+    snap, kids = parse_snapshot(ps1(PS_SNAPSHOT))
+    now = time.time()
+    prev = {}
+    try:
+        with open(CPU_STATE) as f:
+            prev = json.load(f)
+    except Exception:
+        prev = {}
+
+    dt = now - float(prev.get("at") or 0)
+    old = prev.get("cpu") or {}
+    if 0.2 < dt < 60:
+        for pid, p in snap.items():
+            was = old.get(str(pid))
+            if was is None:
+                continue
+            used = p["cpusec"] - float(was)
+            if used > 0:
+                p["cpu"] = round(min(used / dt * 100.0, 100.0 * (os.cpu_count() or 8)), 1)
+
+    try:
+        os.makedirs(os.path.dirname(CPU_STATE), exist_ok=True)
+        with open(CPU_STATE, "w") as f:
+            json.dump({"at": now,
+                       "cpu": {str(k): v["cpusec"] for k, v in snap.items()}}, f)
+    except Exception:
+        pass
+    return snap, kids
 
 
 # ---------------------------------------------------------------- memory

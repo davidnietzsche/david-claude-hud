@@ -56,6 +56,24 @@ LABEL_SKIP = ("com.apple.", "com.google.", "com.DigiDNA", "com.microsoft.",
 
 # ---------------------------------------------------------------- utilities
 
+def exe_base(path):
+    """The bare executable name from any path shape.
+
+    os.path.basename only understands the separator of the host it runs on, and
+    a match list of "claude" never matches "claude.exe" — which on Windows is
+    every process, so nothing was ever recognised. Splits on both separators,
+    drops a .exe suffix, and strips the leading dash BSD gives a login shell."""
+    p = str(path or "")
+    for sep in ("\\", "/"):
+        p = p.rsplit(sep, 1)[-1]
+    p = p.lstrip("-")
+    low = p.lower()
+    for ext in (".exe", ".com", ".bat", ".cmd"):
+        if low.endswith(ext):
+            return p[: -len(ext)]
+    return p
+
+
 def _read_json(path, default=None):
     try:
         with open(path) as f:
@@ -163,9 +181,7 @@ def load_providers():
 def provider_for(proc, provs, cmdlines):
     """Which agent, if any, this process is. Matches the executable basename
     first, then an optional cmdline regex for CLIs that hide behind `node`."""
-    # BSD reports a login shell's argv[0] with a leading dash ("-zsh"), and an
-    # agent started that way would otherwise never match.
-    base = os.path.basename(proc["comm"]).lower().lstrip("-")
+    base = exe_base(proc["comm"]).lower()
     for p in provs:
         if base in p["match"]:
             return p
@@ -192,11 +208,24 @@ def _cpu_seconds(text):
         return 0.0
 
 
+_SNAP_CACHE = []
+
+
 def ps_snapshot():
     """pid -> {ppid, tty, cpu, cpusec, rss, etime, comm}, plus a ppid -> [pid]
-    child index. comm is last because it can contain spaces."""
+    child index. comm is last because it can contain spaces.
+
+    Cached for the life of the process, which is exactly one tick. main() used
+    to take two separate snapshots — one for sessions, one for heat — which on
+    macOS merely listed every process twice, but on Windows meant the second
+    call computed its CPU delta against a state file written milliseconds
+    earlier: every process came back at 0%, and the heat list was always empty."""
+    if _SNAP_CACHE:
+        return _SNAP_CACHE[0]
     if IS_WINDOWS:
-        return WIN.snapshot()
+        r = WIN.snapshot()
+        _SNAP_CACHE.append(r)
+        return r
     out = _run(["ps", "-Ao", "pid=,ppid=,tty=,%cpu=,time=,rss=,etime=,comm="])
     snap, kids = {}, {}
     for line in out.splitlines():
@@ -212,6 +241,7 @@ def ps_snapshot():
         except ValueError:
             continue
         kids.setdefault(ppid, []).append(pid)
+    _SNAP_CACHE.append((snap, kids))
     return snap, kids
 
 
@@ -292,6 +322,15 @@ def drop_attention(sid):
 # Processes that keep the machine running. Never offered as something to close,
 # however much CPU they're using — WindowServer being busy is a symptom of some
 # other app redrawing constantly, not a cause you can act on.
+# Names are compared after exe_base() has stripped the extension, so these must
+# not carry one — with ".exe" here, dwm and friends fell through as ordinary
+# processes and lost the note explaining why they can't be closed.
+HEAT_PROTECTED_WIN = {
+    "system", "registry", "smss", "csrss", "wininit", "services", "lsass",
+    "winlogon", "dwm", "explorer", "svchost", "memory compression", "sihost",
+    "fontdrvhost", "searchindexer", "runtimebroker", "ctfmon", "audiodg",
+    "wudfhost", "dllhost", "taskhostw",
+}
 HEAT_PROTECTED = {
     "windowserver", "kernel_task", "launchd", "loginwindow", "coreaudiod",
     "systemuiserver", "dock", "finder", "controlcenter", "notificationcenter",
@@ -308,6 +347,13 @@ def app_name(path):
     matches on the `.app` inside `com.apple`; and plenty of non-apps ship an
     embedded .app bundle (the system Python lives in one), so only bundles that
     a person could actually quit count."""
+    if IS_WINDOWS:
+        # Anything under Program Files or a user's own installs is something a
+        # person could reasonably be asked to close.
+        if not re.search(r"(Program Files|\\AppData\\Local\\Programs)",
+                         path, re.I):
+            return None
+        return exe_base(path)
     m = re.search(r"/([^/]+)\.app/", path)
     if not m:
         return None
@@ -365,13 +411,13 @@ def collect_heat(snap, kids, agent_pids):
             # to quit; a bare helper process would either ignore it or respawn,
             # so it's shown but not offered as an action.
             if not name:
-                name, owner = os.path.basename(p["comm"]).lstrip("-"), pid
+                name, owner = exe_base(p["comm"]), pid
                 g = bucket(name, owner, "proc")
             else:
                 g = bucket(name, owner, "app")
         else:
             # 3. A plain command line stands on its own.
-            g = bucket(os.path.basename(p["comm"]).lstrip("-"), pid, "proc")
+            g = bucket(exe_base(p["comm"]), pid, "proc")
 
         g["cpu"] += p["cpu"]
         g["mem"] += p["rss"]
@@ -381,7 +427,8 @@ def collect_heat(snap, kids, agent_pids):
     for g in groups.values():
         if g["cpu"] < HEAT_MIN_CPU:
             continue
-        if g["name"].lower() in HEAT_PROTECTED:
+        if g["name"].lower() in (HEAT_PROTECTED_WIN if IS_WINDOWS
+                                 else HEAT_PROTECTED):
             g["kind"] = "system"
         g["cpu"] = round(g["cpu"], 1)
         out.append(g)
@@ -492,7 +539,7 @@ def collect_swap_detail(snap, agent_pids, want):
             if a:
                 name, kind, owner = a, "app", pid
             else:
-                name = os.path.basename(p["comm"]).lstrip("-")
+                name = exe_base(p["comm"])
                 kind = "system" if name.lower() in HEAT_PROTECTED else "proc"
         g = groups.setdefault(name, {"name": name, "bytes": 0, "pid": owner,
                                      "kind": kind, "count": 0})
@@ -527,10 +574,15 @@ def collect_orphans(snap):
     terminal, and launchd isn't managing it. The session that asked for the
     work has exited, so the result is going nowhere — but the process is still
     burning CPU and memory, and will until you reboot."""
+    # Unix reparents an orphan to init (pid 1). Windows leaves the dead
+    # parent's id in place, so "orphaned" there means the parent is simply gone.
+    def orphaned(p):
+        if IS_WINDOWS:
+            return p["ppid"] not in snap and p["ppid"] != 0
+        return p["ppid"] == 1 and p["tty"] in ("??", "-", "")
+
     cands = [p for p in snap.values()
-             if p["ppid"] == 1
-             and p["tty"] in ("??", "-", "")
-             and ORPHAN_RE.search(p["comm"])]
+             if orphaned(p) and ORPHAN_RE.search(p["comm"])]
     if not cands:
         return []
     managed = launchd_pids()
@@ -538,7 +590,7 @@ def collect_orphans(snap):
     for p in cands:
         if p["pid"] in managed:
             continue
-        out.append({"pid": p["pid"], "name": os.path.basename(p["comm"]),
+        out.append({"pid": p["pid"], "name": exe_base(p["comm"]),
                     "cpu": round(p["cpu"], 1), "mem": p["rss"],
                     "uptime": p["etime"]})
     out.sort(key=lambda o: -o["mem"])
@@ -562,14 +614,35 @@ HOSTS = [
 ]
 
 
+# On Windows the host is an .exe, not an .app bundle.
+WIN_HOSTS = {
+    "windowsterminal.exe": ("terminal", "Windows Terminal", False),
+    "conhost.exe":         ("terminal", "Console", False),
+    "powershell.exe":      ("terminal", "PowerShell", False),
+    "pwsh.exe":            ("terminal", "PowerShell", False),
+    "cmd.exe":             ("terminal", "Command Prompt", False),
+    "code.exe":            ("vscode",   "VS Code", False),
+    "cursor.exe":          ("cursor",   "Cursor", False),
+    "windsurf.exe":        ("windsurf", "Windsurf", False),
+    "wezterm-gui.exe":     ("wezterm",  "WezTerm", False),
+    "alacritty.exe":       ("alacritty", "Alacritty", False),
+}
+
+
 def detect_host(pid, snap):
-    """Walk up to the owning application bundle. Returns
+    """Walk up to the owning application. Returns
     (id, label, addressable_by_tty)."""
     cur, hops = pid, 0
     while cur and hops < 10:
         p = snap.get(cur)
         if not p:
             break
+        if IS_WINDOWS:
+            base = exe_base(p["comm"]).lower() + ".exe"
+            if base in WIN_HOSTS:
+                return WIN_HOSTS[base]
+            cur, hops = p["ppid"], hops + 1
+            continue
         m = re.search(r"/([^/]+)\.app/", p["comm"])
         if m:
             found = m.group(1)
@@ -623,9 +696,14 @@ def collect_sessions(now_ms):
     provs = load_providers()
     attn = read_attention()
 
-    # A session is an agent process that owns a terminal. That single rule is
-    # the whole provider-agnostic layer.
-    cands = [p for p in snap.values() if p["tty"] not in ("??", "-", "")]
+    # A session is an agent process you could interact with. On Unix that means
+    # owning a terminal; Windows processes have no controlling tty at all, so
+    # keying on one found precisely nothing there — the whole list came back
+    # empty. There, every matching process counts and the provider match does
+    # the filtering.
+    cands = ([p for p in snap.values()]
+             if IS_WINDOWS
+             else [p for p in snap.values() if p["tty"] not in ("??", "-", "")])
     needs_cmdline = any(p.get("cmdline") for p in provs)
     cmdlines = cmdline_map([p["pid"] for p in cands]) if needs_cmdline else {}
 

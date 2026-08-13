@@ -6,7 +6,31 @@ WebView2, running **the identical `ui.html` and `collect.py`**. Only the shell
 differs between platforms; the interface and the data layer are shared verbatim,
 not forked.
 
-## This has never been built or run
+## What has been verified, and how
+
+The Python collector's Windows path was run end to end against a simulated
+Windows process table on a Mac. That found five real bugs that would each have
+been fatal or near-fatal in production, and they're fixed:
+
+1. **No sessions at all.** Discovery keyed on a process owning a tty. Windows
+   processes have none, so the list came back empty — the HUD would have shown
+   nothing whatsoever.
+2. **Nothing ever matched a provider.** The match list says `claude`; on Windows
+   the executable is `claude.exe`, so no process was ever recognised as an agent.
+3. **The heat list was always empty.** `main()` took two process snapshots per
+   tick. On macOS that merely listed everything twice; on Windows the second
+   call computed its CPU delta against a state file written milliseconds earlier
+   and every process came back at 0%.
+4. **Orphan detection never fired.** Unix reparents an orphan to pid 1; Windows
+   leaves the dead parent's id in place.
+5. **System processes weren't protected.** The protected-name list carried
+   `.exe` suffixes but names are compared with the extension stripped, so `dwm`
+   and `svchost` fell through as ordinary processes.
+
+Sessions, host detection, heat attribution, system protection and orphan
+detection all pass against the simulation now.
+
+## The shell has never been built or run
 
 It was written on a Mac with no Windows machine and no cross-compiler, so
 nothing here has been compiled, let alone used. The Python collector *has* been
