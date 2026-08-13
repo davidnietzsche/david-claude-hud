@@ -229,6 +229,24 @@
         background:var(--hover);font-size:10.5px}
   #swap.on{display:block}
   #swap .note{color:var(--fg3);font-size:9.5px;padding-top:5px;line-height:1.4}
+  /* first run: what we found, and what works here */
+  #intro{display:none;position:absolute;inset:0;z-index:40;background:var(--panel);
+         padding:16px 16px 14px;overflow-y:auto}
+  #intro.on{display:block}
+  #intro h1{font-size:13px;font-weight:800;margin-bottom:3px}
+  #intro .sub{font-size:10.5px;color:var(--fg3);margin-bottom:12px;line-height:1.45}
+  #intro .grp{margin-bottom:11px}
+  #intro .gt{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+             color:var(--fg3);margin-bottom:5px}
+  #intro .ln{display:flex;gap:7px;align-items:baseline;font-size:11px;
+             color:var(--fg2);padding:2px 0}
+  #intro .ln b{color:var(--fg);font-weight:600}
+  #intro .yes{color:var(--done);flex:none;font-weight:700}
+  #intro .no{color:var(--fg3);flex:none;font-weight:700}
+  #intro .go{margin-top:4px;padding:7px 0;border-radius:7px;background:var(--done);
+             color:#fff;font-size:11px;font-weight:700;text-align:center}
+  #intro .go:hover{filter:brightness(1.08)}
+
   /* helpers an agent walked away from */
   #orphans{display:none;margin:8px 10px 0;padding:8px 10px;border-radius:7px;
            background:var(--waitBg);border:1px solid var(--waitLine);font-size:10.5px}
@@ -416,6 +434,7 @@
     <span class="val" id="v-wk">—</span></div>
 </div>
 
+<div id="intro"></div>
 <div id="orphans"></div>
 <div id="heat"></div>
 <div id="swap"></div>
@@ -846,6 +865,70 @@ function drawOrphans(list){
   layout();
 }
 
+/* ---------- first run ------------------------------------------------------
+   Shown once. It reports what was detected rather than asking you to pick a
+   platform: the process tree already knows which app each session runs in, and
+   an answer you typed would go stale the moment you opened a session somewhere
+   else. All it needs from you is an acknowledgement. */
+function drawIntro(d){
+  if (localStorage.getItem('hudIntroDone') === '1') return;
+  const el = $('intro');
+  if (el.classList.contains('on')) return;      // don't rebuild under the user
+
+  const hosts = {};
+  for (const s of d.sessions || []) {
+    const k = s.hostLabel || 'Unknown';
+    hosts[k] = hosts[k] || {n: 0, jump: !!s.canJump};
+    hosts[k].n++;
+  }
+  const provs = {};
+  for (const s of d.sessions || []) provs[s.providerLabel] = (provs[s.providerLabel] || 0) + 1;
+  const caps = d.capabilities || {};
+
+  const line = (ok, label, note) =>
+    `<div class="ln"><span class="${ok ? 'yes' : 'no'}">${ok ? '✓' : '—'}</span>` +
+    `<span><b>${label}</b>${note ? ' · ' + note : ''}</span></div>`;
+
+  let h = `<h1>Found your setup</h1>` +
+    `<div class="sub">Detected from what's running — nothing to configure.</div>`;
+
+  h += `<div class="grp"><div class="gt">Running in</div>`;
+  const hostKeys = Object.keys(hosts);
+  h += hostKeys.length
+    ? hostKeys.map(k => line(hosts[k].jump, `${k} · ${hosts[k].n} session${
+        hosts[k].n > 1 ? 's' : ''}`,
+        hosts[k].jump ? 'double-click opens the exact tab'
+                      : 'double-click brings the window forward')).join('')
+    : `<div class="ln"><span class="no">—</span><span>No agent sessions yet. ` +
+      `Start one and it appears here.</span></div>`;
+  h += `</div>`;
+
+  const pk = Object.keys(provs);
+  if (pk.length) {
+    h += `<div class="grp"><div class="gt">Agents</div>` +
+      pk.map(k => line(true, `${k} · ${provs[k]}`)).join('') + `</div>`;
+  }
+
+  h += `<div class="grp"><div class="gt">On this machine</div>` +
+    line(caps.usage !== false, 'Usage limits', 'session and weekly') +
+    line(caps.swap !== false, 'Swap', 'why it stutters when CPU looks fine') +
+    line(caps.temp !== false, 'Temperature',
+         caps.temp === false ? 'not readable here' : 'thermal state') +
+    line(caps.jobs !== false, 'Background jobs', 'and which are failing') +
+    `</div>`;
+
+  h += `<div class="go" id="intro-ok">Got it</div>`;
+  el.innerHTML = h;
+  el.classList.add('on');
+  $('intro-ok').onclick = () => {
+    localStorage.setItem('hudIntroDone', '1');
+    el.classList.remove('on');
+    el.innerHTML = '';
+    layout();
+  };
+  layout();
+}
+
 /* ---------- what the platform can report ----------------------------------
    The collector declares its capabilities; the interface adapts. This is a
    negotiation rather than a per-OS branch, so a machine missing a sensor for
@@ -1076,6 +1159,7 @@ window.render = d => {
   // meter permanently blank. Windows has no readable thermal state, so that
   // row simply isn't there — and the same mechanism covers any future gap.
   applyCapabilities(d.capabilities);
+  drawIntro(d);
   // Belt and braces: if the edited row went away (session ended, list rebuilt),
   // release the flag rather than blocking every later interaction.
   if (renaming && !$('list-s').querySelector('[contenteditable]')) {
@@ -1214,8 +1298,10 @@ window.render = d => {
     const pv = row.querySelector('.prov');
     pv.textContent = s.providerLabel;
     pv.style.color = s.colour;
-    row.title = (body.classList.contains('no-jump')
-        ? `` : `Double-click to open this terminal\n`) +
+    row.title = (body.classList.contains('no-jump') ? ``
+        : s.canJump ? `Double-click to open this terminal\n`
+        : `Double-click to bring ${s.hostLabel || 'its window'} forward\n`) +
+      (s.hostLabel ? `Running in ${s.hostLabel}\n` : ``) +
       `${s.providerLabel}${s.exact ? '' : ' (state inferred from CPU)'}\n` +
       `${s.name}\npid ${s.pid} · ${s.devtty}\n` +
       `RAM ${bytes(s.mem)} (process tree) · CPU ${s.treeCpu}%\n` +

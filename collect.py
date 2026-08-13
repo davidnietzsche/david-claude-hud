@@ -545,6 +545,42 @@ def collect_orphans(snap):
     return out[:6]
 
 
+# Where a session is actually running. The same agent behaves differently
+# depending on its host: a Terminal.app tab can be addressed by tty, a VS Code
+# integrated terminal can only be focused as a window, and a desktop app has no
+# terminal at all. Detected rather than configured — the process tree already
+# knows, and asking the user gets stale the moment they switch.
+HOSTS = [
+    ("terminal",  ["Terminal"],                     "Terminal",       True),
+    ("iterm",     ["iTerm2", "iTerm"],              "iTerm2",         True),
+    ("vscode",    ["Visual Studio Code", "Code"],   "VS Code",        False),
+    ("cursor",    ["Cursor"],                       "Cursor",         False),
+    ("windsurf",  ["Windsurf"],                     "Windsurf",       False),
+    ("warp",      ["Warp"],                         "Warp",           False),
+    ("ghostty",   ["Ghostty"],                      "Ghostty",        False),
+    ("codex",     ["Codex", "ChatGPT"],             "Codex app",      False),
+]
+
+
+def detect_host(pid, snap):
+    """Walk up to the owning application bundle. Returns
+    (id, label, addressable_by_tty)."""
+    cur, hops = pid, 0
+    while cur and hops < 10:
+        p = snap.get(cur)
+        if not p:
+            break
+        m = re.search(r"/([^/]+)\.app/", p["comm"])
+        if m:
+            found = m.group(1)
+            for hid, names, label, tabs in HOSTS:
+                if found in names:
+                    return hid, label, tabs
+            return "other", found, False
+        cur, hops = p["ppid"], hops + 1
+    return "unknown", "", False
+
+
 def read_attention():
     """Sessions an agent has asked for a human about, dropped by its hook.
     Keyed by session id."""
@@ -695,8 +731,15 @@ def collect_sessions(now_ms):
                 or f"pid {pid}")
 
         tty_short = proc["tty"]
+        host_id, host_label, host_tabs = detect_host(pid, snap)
         live_sids.add(sid)
         sessions.append({
+            "host": host_id,
+            "hostLabel": host_label,
+            # Only some hosts let us address the exact tab; the rest can be
+            # focused as a window at best, and the UI says so rather than
+            # offering a jump that half-works.
+            "canJump": bool(host_tabs and tty_short),
             "provider": prov["id"],
             "providerLabel": prov["label"],
             "colour": prov.get("colour") or "#888888",

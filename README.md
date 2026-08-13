@@ -173,6 +173,22 @@ it — and asks twice first.
 Minimised it's one line — but it keeps the two limit bars, because those are the
 ones worth a glance while you work.
 
+## It figures out your setup on first run
+
+There's no configuration and no questionnaire. The process tree already knows
+which application each session is running inside, so the HUD reads it — and an
+answer you typed would go stale the moment you opened a session somewhere else.
+First launch shows what it found and what that means here:
+
+- **Which host** each session runs in — Terminal, iTerm2, VS Code, Cursor,
+  Windsurf, Warp, Ghostty, a desktop agent app.
+- **What double-click can do there.** A Terminal or iTerm2 tab is addressable by
+  tty, so it opens that exact tab. A VS Code integrated terminal or a desktop
+  app isn't, so it brings that window forward instead — and the row says so
+  rather than promising a jump it can only half-deliver.
+- **What this machine can report** — usage limits, swap, thermal state,
+  background jobs; whatever isn't available is hidden rather than left blank.
+
 ## Works with any agent, not just Claude
 
 Session discovery is one rule: **an agent process that owns a terminal.** That

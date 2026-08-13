@@ -793,6 +793,21 @@ didReceiveNotificationResponse:(UNNotificationResponse *)resp
 
 // Bring the Terminal window that owns a given tty to the front, and select the
 // matching tab inside it.
+// Focus an app by bundle name when we can't address a tab inside it. A VS Code
+// integrated terminal or a desktop agent app has no tty we can steer to, so
+// bringing the window forward is the honest ceiling — the UI is told this up
+// front and doesn't promise more.
+- (void)focusApp:(NSString *)appName {
+    if (!appName.length) return;
+    for (NSRunningApplication *a in [NSWorkspace sharedWorkspace].runningApplications) {
+        if ([a.localizedName isEqualToString:appName]) {
+            [a activateWithOptions:NSApplicationActivateAllWindows];
+            return;
+        }
+    }
+    hlog(@"focusApp: %@ is not running", appName);
+}
+
 - (void)focusTTY:(NSString *)tty winId:(NSString *)winId {
     if (tty.length == 0) return;
     // Always resolve by tty rather than a cached window id. Window ids go stale
