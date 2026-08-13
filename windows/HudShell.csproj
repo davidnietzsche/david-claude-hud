@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>ClaudeHUD</AssemblyName>
+    <RootNamespace>ClaudeHud</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="8.0.0" />
+    <PackageReference Include="Microsoft.VisualBasic" Version="10.3.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- the interface and collector are shared with macOS, not duplicated -->
+    <Content Include="../ui.html" CopyToOutputDirectory="PreserveNewest" Link="ui.html" />
+    <Content Include="../collect.py" CopyToOutputDirectory="PreserveNewest" Link="collect.py" />
+    <Content Include="../platform_win.py" CopyToOutputDirectory="PreserveNewest" Link="platform_win.py" />
+    <Content Include="../sounds/*.wav" CopyToOutputDirectory="PreserveNewest" Link="sounds/%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

@@ -2,6 +2,13 @@
 # Install Claude HUD as a login agent so it's always there after a reboot.
 set -euo pipefail
 cd "$(dirname "$0")"
+
+# Point people at the right installer rather than failing halfway through.
+case "$(uname -s)" in
+  Darwin) ;;
+  *) echo "This installer is for macOS. On Windows run:  windows\\install.ps1" >&2
+     echo "(uname reports: $(uname -s))" >&2; exit 1 ;;
+esac
 DIR="$(pwd)"
 LABEL="io.github.davidnietzsche.claudehud"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"

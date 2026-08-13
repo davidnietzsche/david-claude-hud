@@ -331,6 +331,7 @@
             text-align:right;font-weight:600}
   .row.heavy .mem{color:var(--fail)}
   body.compact .row .tty{display:none}
+  body.no-jump .row.click{cursor:default}
   .row.click:active{background:var(--track)}
   /* job detail: what it runs, why it failed, and what you can do about it */
   .jd{margin:2px 6px 8px;padding:8px 10px;border-radius:7px;
@@ -845,6 +846,26 @@ function drawOrphans(list){
   layout();
 }
 
+/* ---------- what the platform can report ----------------------------------
+   The collector declares its capabilities; the interface adapts. This is a
+   negotiation rather than a per-OS branch, so a machine missing a sensor for
+   any other reason degrades the same way. */
+let capsApplied = null;
+function applyCapabilities(caps){
+  if (!caps) return;
+  const key = JSON.stringify(caps);
+  if (key === capsApplied) return;      // only touch the DOM when it changes
+  capsApplied = key;
+  const hide = (sel, ok) => {
+    const el = typeof sel === 'string' ? $(sel) : sel;
+    if (el) el.style.display = ok ? '' : 'none';
+  };
+  hide('m-temp', caps.temp !== false);
+  hide('m-swap', caps.swap !== false);
+  hide('sec-j',  caps.jobs !== false);
+  body.classList.toggle('no-jump', caps.jumpToTerminal === false);
+}
+
 /* ---------- swap ----------------------------------------------------------
    The meter that actually explains stuttering on a machine whose CPU and RAM
    both look fine: once swap fills, every process that touches a paged-out page
@@ -1051,6 +1072,10 @@ function layout(){
 /* ---------- main render ---------- */
 window.render = d => {
   lastData = d;
+  // Hide anything this platform can't actually report, rather than leaving a
+  // meter permanently blank. Windows has no readable thermal state, so that
+  // row simply isn't there — and the same mechanism covers any future gap.
+  applyCapabilities(d.capabilities);
   // Belt and braces: if the edited row went away (session ended, list rebuilt),
   // release the flag rather than blocking every later interaction.
   if (renaming && !$('list-s').querySelector('[contenteditable]')) {
@@ -1189,7 +1214,8 @@ window.render = d => {
     const pv = row.querySelector('.prov');
     pv.textContent = s.providerLabel;
     pv.style.color = s.colour;
-    row.title = `Double-click to open this terminal\n` +
+    row.title = (body.classList.contains('no-jump')
+        ? `` : `Double-click to open this terminal\n`) +
       `${s.providerLabel}${s.exact ? '' : ' (state inferred from CPU)'}\n` +
       `${s.name}\npid ${s.pid} · ${s.devtty}\n` +
       `RAM ${bytes(s.mem)} (process tree) · CPU ${s.treeCpu}%\n` +
@@ -1214,6 +1240,7 @@ window.render = d => {
     row.onclick = null;
     row.ondblclick = () => {
       if (renaming) return;
+      if (body.classList.contains('no-jump')) { markRead(s); withFlip(() => render(d)); return; }
       markRead(s);
       send({cmd:"focus", tty:s.devtty});
       render(d);

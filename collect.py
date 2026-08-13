@@ -20,6 +20,10 @@ import time
 import glob
 from datetime import datetime, timedelta
 
+IS_WINDOWS = os.name == "nt"
+if IS_WINDOWS:                      # keeps the macOS path untouched
+    import platform_win as WIN
+
 HOME = os.path.expanduser("~")
 HUD_DIR = os.path.join(HOME, ".claude-hud")
 SESS_DIR = os.path.join(HOME, ".claude", "sessions")
@@ -191,6 +195,8 @@ def _cpu_seconds(text):
 def ps_snapshot():
     """pid -> {ppid, tty, cpu, cpusec, rss, etime, comm}, plus a ppid -> [pid]
     child index. comm is last because it can contain spaces."""
+    if IS_WINDOWS:
+        return WIN.snapshot()
     out = _run(["ps", "-Ao", "pid=,ppid=,tty=,%cpu=,time=,rss=,etime=,comm="])
     snap, kids = {}, {}
     for line in out.splitlines():
@@ -247,6 +253,8 @@ def tree_usage(root, snap, kids):
 
 
 def working_dirs(pids):
+    if IS_WINDOWS:
+        return {}          # no lsof; names come from the session file instead
     """cwd per pid in one lsof call — the fallback session name for providers
     that don't publish one."""
     if not pids:
@@ -382,6 +390,9 @@ def collect_heat(snap, kids, agent_pids):
 
 
 def read_swap(now_ms):
+    if IS_WINDOWS:
+        _, sw = WIN.parse_memory(WIN.ps1(WIN.PS_MEMORY))
+        return sw
     """Swap, measured by *rate* rather than fill.
 
     How full swap is turns out to be nearly useless: macOS resizes the swap
@@ -421,6 +432,12 @@ def read_swap(now_ms):
 
 
 def refresh_swap_detail():
+    if IS_WINDOWS:
+        snap, _ = WIN.snapshot()
+        _write_json(SWAP_F, {"at": int(time.time() * 1000), "rows": [
+            {"pid": p["pid"], "cmprs": p["rss"]} for p in snap.values()]})
+        _clear_lock("swap")
+        return
     """Which processes are actually sitting in compressed memory / swap.
 
     There's no per-process swap figure on macOS, but `top` reports compressed
@@ -492,6 +509,8 @@ ORPHAN_RE = re.compile(r"(ugrep|ripgrep|/rg$|chrome-headless-shell|"
 
 
 def launchd_pids():
+    if IS_WINDOWS:
+        return set()
     """Processes launchd owns. A daemon also has ppid 1 and must never be
     mistaken for an abandoned helper."""
     out = _run(["launchctl", "list"], timeout=8)
@@ -735,12 +754,17 @@ def refresh_usage():
         _write_json(USAGE_F, prev)
         _clear_lock("usage")
 
-    raw = _run(["security", "find-generic-password",
-                "-s", "Claude Code-credentials", "-w"], timeout=10)
-    try:
-        token = json.loads(raw)["claudeAiOauth"]["accessToken"]
-    except Exception:
-        return fail("no token")
+    if IS_WINDOWS:
+        token = WIN.oauth_token()
+        if not token:
+            return fail("no token")
+    else:
+        raw = _run(["security", "find-generic-password",
+                    "-s", "Claude Code-credentials", "-w"], timeout=10)
+        try:
+            token = json.loads(raw)["claudeAiOauth"]["accessToken"]
+        except Exception:
+            return fail("no token")
 
     out = _run(["curl", "-s", "-m", "20",
                 "https://api.anthropic.com/api/oauth/usage",
@@ -914,6 +938,8 @@ def plist_detail(plist):
 
 
 def collect_launchd(now):
+    if IS_WINDOWS:
+        return WIN.jobs()
     out = _run(["launchctl", "list"], timeout=8)
     jobs = []
     for line in out.splitlines()[1:]:
@@ -975,6 +1001,8 @@ def collect_launchd(now):
 
 
 def collect_cron(now):
+    if IS_WINDOWS:
+        return []          # Scheduled Tasks already covers both roles
     out = _run(["crontab", "-l"], timeout=6)
     jobs = []
     for line in out.splitlines():
@@ -1043,8 +1071,15 @@ def main():
     jobs.sort(key=lambda j: (not j["running"], not j["failed"],
                              j["nextTs"] or 9e18, j["name"]))
 
+    caps = WIN.capabilities() if IS_WINDOWS else {
+        "temp": True, "swap": True, "jobs": True, "usage": True,
+        "jumpToTerminal": True, "orphans": True,
+    }
+
     print(json.dumps({
         "now": now_ms,
+        "platform": "windows" if IS_WINDOWS else "macos",
+        "capabilities": caps,
         "sessions": sessions,
         "counts": {
             "total": len(sessions),

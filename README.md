@@ -213,13 +213,31 @@ without touching the source.
 
 ## Install
 
-macOS 12+ and the Xcode Command Line Tools (`xcode-select --install`).
+**macOS** — 12+ and the Xcode Command Line Tools (`xcode-select --install`):
 
 ```sh
 git clone https://github.com/davidnietzsche/david-claude-hud.git
 cd david-claude-hud
 ./install.sh
 ```
+
+**Windows** — .NET 8 SDK, Python, and the WebView2 runtime (already present on
+Windows 11):
+
+```powershell
+git clone https://github.com/davidnietzsche/david-claude-hud.git
+cd david-claude-hud\windows
+.\install.ps1
+```
+
+Each installer refuses to run on the wrong platform and points at the other, so
+there's nothing to get wrong. **The Windows shell has never been built or run** —
+see [windows/README.md](windows/README.md) before trying it.
+
+The interface and the collector are shared verbatim between the two; only the
+window shell differs. The collector declares what the platform can report and
+the interface hides the rest, so Windows simply has no temperature meter rather
+than a permanently blank one.
 
 That compiles the app, registers a LaunchAgent so it starts at login, and adds
 the attention hooks to `~/.claude/settings.json` — appending only, your existing
