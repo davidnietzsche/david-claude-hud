@@ -237,18 +237,18 @@ cd david-claude-hud
 ./install.sh
 ```
 
-**Windows** — .NET 8 SDK, Python, and the WebView2 runtime (already present on
-Windows 11):
+**Windows** — optimised for PowerShell. No build step, nothing to install:
+Edge provides the window, PowerShell pins it on top, Python runs the bridge and
+the collector — all of which a stock Windows box already has.
 
 ```powershell
 git clone https://github.com/davidnietzsche/david-claude-hud.git
 cd david-claude-hud\windows
-.\install.ps1
+.\run.ps1
 ```
 
-Each installer refuses to run on the wrong platform and points at the other, so
-there's nothing to get wrong. **The Windows shell has never been built or run** —
-see [windows/README.md](windows/README.md) before trying it.
+See [windows/README.md](windows/README.md) for what's verified and what
+Windows can't do (no thermal sensor, no addressable terminal tab).
 
 The interface and the collector are shared verbatim between the two; only the
 window shell differs. The collector declares what the platform can report and

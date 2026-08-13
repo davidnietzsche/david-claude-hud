@@ -1,75 +1,83 @@
-# Windows shell — untested
+# Windows — optimised for PowerShell
 
-The macOS shell is an `NSPanel` hosting a `WKWebView`. This is the same idea in
-Win32 terms: a borderless, always-on-top, no-activate tool window hosting
-WebView2, running **the identical `ui.html` and `collect.py`**. Only the shell
-differs between platforms; the interface and the data layer are shared verbatim,
-not forked.
+**No build step. Nothing to install.** Everything the macOS app does with a
+compiled Cocoa shell is done here with what a stock Windows box already has:
+Edge for the window, PowerShell to pin and move it, Python for the bridge and
+the collector.
 
-## What has been verified, and how
+```powershell
+git clone https://github.com/davidnietzsche/david-claude-hud.git
+cd david-claude-hud\windows
+.\run.ps1
+```
 
-The Python collector's Windows path was run end to end against a simulated
-Windows process table on a Mac. That found five real bugs that would each have
-been fatal or near-fatal in production, and they're fixed:
+Stop it by closing the window, or `.\run.ps1 -Stop`.
 
-1. **No sessions at all.** Discovery keyed on a process owning a tty. Windows
-   processes have none, so the list came back empty — the HUD would have shown
-   nothing whatsoever.
-2. **Nothing ever matched a provider.** The match list says `claude`; on Windows
-   the executable is `claude.exe`, so no process was ever recognised as an agent.
-3. **The heat list was always empty.** `main()` took two process snapshots per
-   tick. On macOS that merely listed everything twice; on Windows the second
-   call computed its CPU delta against a state file written milliseconds earlier
-   and every process came back at 0%.
-4. **Orphan detection never fired.** Unix reparents an orphan to pid 1; Windows
-   leaves the dead parent's id in place.
-5. **System processes weren't protected.** The protected-name list carried
-   `.exe` suffixes but names are compared with the extension stripped, so `dwm`
-   and `svchost` fell through as ordinary processes.
+## Why PowerShell rather than a compiled app
 
-Sessions, host detection, heat attribution, system protection and orphan
-detection all pass against the simulation now.
+The obvious port is a C# app hosting WebView2. It's still here as an option
+(see below), but it needs the .NET SDK, the WebView2 runtime, and a build — and
+on Windows, PowerShell is the thing that's *always* already there.
 
-## The shell has never been built or run
+Removing the build step also removed the biggest risk in this port. The C#
+shell was ~400 lines that had never been compiled, let alone run. The PowerShell
+route replaces it with a Python bridge that has been **tested end to end** and
+about 30 lines of `SetWindowPos`, which is the only genuinely Windows-specific
+code left.
 
-It was written on a Mac with no Windows machine and no cross-compiler, so
-nothing here has been compiled, let alone used. The Python collector *has* been
-tested — its Windows parsers are unit-tested against captured PowerShell output
-— but everything in this directory is unverified.
+## How it fits together
 
-If you're the first person to run it, these are the parts most likely to be
-wrong:
+| | macOS | Windows |
+|---|---|---|
+| Interface | `ui.html` | **the same `ui.html`** |
+| Data | `collect.py` | **the same `collect.py`** |
+| Window | `NSPanel` | Edge in `--app` mode |
+| Always on top | `NSStatusWindowLevel` | `SetWindowPos(HWND_TOPMOST)` from PowerShell |
+| Page ↔ machine | WKWebView message handler | `bridge.py` on loopback |
+| Sound | `NSSound` | `winsound` (standard library) |
 
-1. **`WS_EX_NOACTIVATE`** — meant to stop the HUD stealing focus from your
-   terminal, as the non-activating `NSPanel` does on macOS. It may also swallow
-   clicks inside WebView2; if the interface is dead to the mouse, that's the
-   first thing to drop.
-2. **Dragging** — `WM_NCLBUTTONDOWN`/`HTCAPTION` is the usual trick for moving a
-   borderless window, but it interacts badly with `NOACTIVATE` in some builds.
-3. **Transparent background** — the page paints its own near-opaque background,
-   so this may not matter, but rounded corners will need
-   `DwmSetWindowAttribute` with `DWMWCP_ROUND` rather than a layer mask.
-4. **`python` on PATH** — the collector is launched as `python`. On a machine
-   where it's `py` or a full path, that needs changing.
+The page detects which host it's in and picks its transport, so there is one
+interface file, not two. The bridge listens only on `127.0.0.1` and every
+request carries a token minted at startup — otherwise any local page could ask
+it to kill processes.
 
 ## What Windows can't do
 
-The collector declares its capabilities and the interface hides whatever isn't
-supported, so these degrade rather than break:
+The collector declares its capabilities and the interface hides what's missing,
+so these degrade rather than break:
 
 | | |
 |---|---|
-| **Temperature** | No equivalent of `NSProcessInfo.thermalState`; consumer Windows exposes no readable die temperature without a vendor driver. The meter is hidden entirely. |
-| **Jump to terminal** | macOS addresses a Terminal tab by its tty over AppleScript. Windows Terminal exposes no per-tab addressing at all, so double-click marks a session read instead of pretending to jump. |
-| **Rename** | Same reason — there's no tab whose title we could set. |
+| **Temperature** | No equivalent of `NSProcessInfo.thermalState`, and consumer Windows exposes no readable die temperature without a vendor driver. The meter is absent, not blank. |
+| **Jump to a terminal tab** | macOS addresses a Terminal tab by tty over AppleScript. Windows Terminal exposes no per-tab addressing, so double-click marks a session read instead of pretending. |
+| **Rename** | Same reason — no tab whose title we could set. |
 
-Everything else — sessions, usage limits, swap, background jobs, abandoned
-helpers, the character — works from the shared collector.
+Rounded corners and translucency are also gone: an Edge app window doesn't do
+either. Everything else — sessions, hosts, usage limits, swap, background jobs,
+abandoned helpers, the character, the alerts — works from the shared code.
 
-## Build
+## What's verified, and what isn't
 
-Needs the .NET 8 SDK and the WebView2 runtime (shipped with Windows 11 and
-current Windows 10).
+**Tested on macOS, end to end:** the bridge (page served with its token, `/data`
+returning a real collector payload, `/cmd` accepting commands, unauthenticated
+requests refused with 403), and the page falling back to `fetch` when no
+WKWebView is present.
+
+**Tested against a simulated Windows process table:** session discovery, host
+detection, heat attribution, system-process protection, orphan detection. That
+simulation found five bugs that each made the port non-functional — see the
+v2.1.1 release notes.
+
+**Not tested:** `run.ps1` itself. There was no Windows machine here. It's short
+and every call in it is documented behaviour, but nobody has run it. If it
+fails, the likely spots are Edge's path, how long the window handle takes to
+appear, and whether `--app` honours the requested size on your build.
+
+## The C# option
+
+`HudShell.cs` builds a WebView2 app with real rounded corners and a proper tray
+icon. It needs the .NET 8 SDK and has never been compiled. Prefer `run.ps1`
+unless you specifically want the native window.
 
 ```powershell
 dotnet build -c Release

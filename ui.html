@@ -452,7 +452,40 @@
 </div>
 
 <script>
-const send = m => window.webkit.messageHandlers.hud.postMessage(m);
+// One page, two hosts. Inside the macOS shell it talks to the native side over
+// a WKWebView message handler; served to a browser by the PowerShell build it
+// posts to the local bridge instead and polls for data. Everything below this
+// line is identical either way.
+const NATIVE = !!(window.webkit && window.webkit.messageHandlers
+                  && window.webkit.messageHandlers.hud);
+const send = NATIVE
+  ? m => window.webkit.messageHandlers.hud.postMessage(m)
+  : m => { try {
+      fetch('/cmd?' + (window.__hudToken || ''), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json',
+                  'X-Hud-Token': window.__hudToken || ''},
+        body: JSON.stringify(m),
+      });
+    } catch (e) {} };
+
+if (!NATIVE) {
+  // The native shell pushes; the bridge is pulled from. Same cadence.
+  const pull = async () => {
+    try {
+      const r = await fetch('/data?' + (window.__hudToken || ''),
+                            {headers: {'X-Hud-Token': window.__hudToken || ''}});
+      const d = await r.json();
+      const m = d.machine || {};
+      window.setMachine(m.cpu || 0, m.ram || 0, m.therm || 0,
+                        m.batt == null ? -1 : m.batt);
+      window.render(d);
+    } catch (e) { /* bridge restarting; the next tick will catch up */ }
+  };
+  setInterval(pull, 1500);
+  addEventListener('DOMContentLoaded', pull);
+  pull();
+}
 const $ = id => document.getElementById(id);
 const body = document.body;
 
